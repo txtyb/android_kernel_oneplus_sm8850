@@ -42,7 +42,7 @@ on:
       - 'scripts/**'
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: kernel-build-${{ github.ref }}
@@ -92,9 +92,10 @@ jobs:
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             bc bison flex libssl-dev libelf-dev libdw-dev cpio xz-utils zip unzip \
-            wget curl git python3 dwarves
+            wget curl git python3 dwarves ccache
           echo "--- host tools ---"
           make --version | head -n1
+          ccache --version | head -n1
           pahole --version || true
 
       - name: Restore ccache
@@ -146,6 +147,27 @@ jobs:
             tail -n 250 build.log 2>/dev/null || echo "no build.log"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish build log to the ci-logs branch
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          LOG="$GITHUB_WORKSPACE/build.log"
+          [ -f "$LOG" ] || { echo "no build log found"; exit 0; }
+          NAME="$(echo "$GITHUB_WORKFLOW" | tr -c 'A-Za-z0-9._-' '_')"
+          WORK=$(mktemp -d); cd "$WORK"
+          git init -q .
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          { git fetch -q --depth=1 origin ci-logs && git checkout -q -B ci-logs FETCH_HEAD; } || git checkout -q -B ci-logs
+          mkdir -p logs
+          tail -n 5000 "$LOG" > "logs/${NAME}-last.log"
+          git add -A
+          git commit -q -m "ci: ${NAME} run #${GITHUB_RUN_NUMBER} failed (${GITHUB_SHA:0:7})"
+          git push -q origin ci-logs && echo "log published to the ci-logs branch"
 
       - name: Create release
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true'
