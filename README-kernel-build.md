@@ -1,109 +1,145 @@
 # OnePlus 15 (SM8850 / canoe) OSS 内核编译
 
-用 GitHub Actions 从 OnePlus OSS 源码编译 **GKI 内核 `Image`**，并打包成 **AnyKernel3 刷机包**，
-可直接在 PixelOS 17 / LineageOS 24 等 ROM 上刷入替换内核。
+用 GitHub Actions 从 OnePlus OSS 源码编译 OnePlus 15（SM8850 "canoe"，机型代号 `infiniti`）内核。
 
-- 工作流：[`.github/workflows/build-kernel.yml`](.github/workflows/build-kernel.yml)
-- 构建脚本：[`scripts/build-oki-kernel.sh`](scripts/build-oki-kernel.sh)
-- 刷机包内 `anykernel.sh` 模板：[`scripts/anykernel.sh`](scripts/anykernel.sh)
+仓库里有两个工作流：
 
-## 1. 这个仓库是什么（很重要）
+| 工作流 | 编什么 | 产物 | 用途 |
+| --- | --- | --- | --- |
+| [build-full-kernel.yml](.github/workflows/build-full-kernel.yml) | **完整 OSS 内核**（`kernel_platform` + kleaf） | `Image`、`boot.img`、`dtb.img`、`dtbo.img`、`vendor_dlkm`/`system_dlkm` 模块 | 产出可以**替换 ROM 里那份预编译内核**（`device/oneplus/infiniti-kernel`）的那套文件 |
+| [build-kernel.yml](.github/workflows/build-kernel.yml) | 只编译 GKI `Image`（`make`，快） | `Image` + AnyKernel3 刷机包 | 快速拿到一个能刷的定制内核（保留 ROM 的 ramdisk/dtbo/模块） |
 
-`android_kernel_oneplus_sm8850` 是 Qualcomm/OPLUS **kernel_platform 的 SoC 侧仓库**，
-不是一个能独立编译的完整内核树。它缺少：
+构建脚本：[`scripts/build-kernel-platform.sh`](scripts/build-kernel-platform.sh)（全量）、
+[`scripts/build-oki-kernel.sh`](scripts/build-oki-kernel.sh)（GKI/AnyKernel3）、
+[`scripts/anykernel.sh`](scripts/anykernel.sh)（刷机包配置）。
 
-| 缺少的东西 | 说明 |
-| --- | --- |
-| `common/` | ACK(GKI) 内核主体（`fs/`、`security/`、`crypto/`、`rust/` … 都在这里） |
-| `vendor/oneplus/sm8850-modules` | OPLUS 厂商模块源码（本仓库大量 symlink 指向它，如 `drivers/power/oplus`） |
-| `vendor/oneplus/sm8850-devicetrees` | 设备树（`arch/arm64/boot/dts/vendor` 就是指向它的 symlink） |
-| `prebuilts/`、`build/kernel/` | 官方 bazel/kleaf 全量编译所需的工具链与构建脚手架 |
+---
 
-目前这个仓库里的 `bazel` 全量编译（`//vendor/oneplus/kernel:canoe_perf_dist`）无法单独跑通，
-所以本工作流采用的是**社区验证过的 `make` 路线**：只编译 `Image`（GKI 内核）。
+## 1. 全量内核（推荐，和 LineageOS 24 / PixelOS 17 官方做法一致）
 
-## 2. 编译出来的东西
+### 1.1 这个仓库在整条链路里的位置
 
-产物（Actions 运行页 Artifacts）：
-
-- `OKI-OnePlus15-<内核版本>.zip` —— AnyKernel3 刷机包，里面就是新的 `Image`
-- `Image` —— 裸内核镜像
-- `build-info.txt`（含 sha256）、`.config`
-
-刷机包只替换 `boot` 分区里的内核，**不碰** `init_boot` 的 ramdisk、`dtbo`、`vendor_dlkm`，所以：
-
-- ROM 的 ramdisk / 设备树 / 厂商模块保持原样；
-- 但新内核的 `vermagic`（内核版本串）与内核符号必须和 ROM 里的厂商模块对得上，否则
-  模块加载失败会出现不开机（卡 Logo / 反复重启）等问题。
-
-## 3. 版本串必须匹配（默认值已按一加 15 设置）
-
-厂商模块的 `vermagic` 里带着完整发行串，例如一加 15 / OOS 16.0.0（Linux 6.12.23）：
+`android_kernel_oneplus_sm8850`（本仓库）是 Qualcomm/OPLUS **kernel_platform 的 SoC 侧仓库**，
+不能单独编译。它的 `soc_repo_path.bzl` 明确写出了自己在平台里的位置：
 
 ```
-6.12.23-android16-5-ga8f88ad96df3-ab13929693-4k
+SOC_REPO_PATH="vendor/oneplus/kernel"
+SOC_MODULES_REPO_PATH="vendor/oneplus/sm8850-modules"
 ```
 
-工作流默认就把 `CONFIG_LOCALVERSION` 设成 `-android16-5-ga8f88ad96df3-ab13929693-4k`，
-和官方内核一致。**如果你的 ROM 内核版本串不是这个**，请用 `kernel_suffix` 输入改成你自己的：
+`arch/arm64/boot/dts/vendor`、`drivers/power/oplus`、`include/soc/oplus/*` 等 40 个 symlink
+同样指向 `vendor/oneplus/sm8850-devicetrees` 和 `vendor/oneplus/sm8850-modules`。
 
-手机上查看：`设置 → 关于手机 → Android 版本 → 内核版本`，或者
+### 1.2 平台组装清单（取自 LineageOS 24 官方 manifest）
+
+- [`LineageOS/android@lineage-24.0:snippets/kernel-6.12.xml`](https://github.com/LineageOS/android/blob/lineage-24.0/snippets/kernel-6.12.xml)
+  给出 ACK/kleaf/预编译工具链等全部 AOSP 项目与修订
+- [`android_device_oneplus_sm8850-common@lineage-24.0:lineage.dependencies`](https://github.com/OnePlus-SM8850-Development/android_device_oneplus_sm8850-common/blob/lineage-24.0/lineage.dependencies)
+  给出三个 OnePlus 项目的落盘路径
+
+最终工作区（`ROOT_DIR` = bazel workspace 根）：
+
+```
+kernel-platform/
+├── build/kernel/                      aosp kernel/build (kleaf)
+├── common/                            aosp kernel/common (ACK android16-6.12-2026-06)
+├── prebuilts/{clang/host/linux-x86, build-tools, clang-tools, kernel-build-tools, rust, jdk/jdk11, gcc/..., ndk-r26}
+├── external/*                         aosp 外部依赖（libcap、lz4、dtc、libufdt、bazel-* 等）
+├── tools/{bazel, mkbootimg}
+├── vendor/oneplus/kernel/             ← 本仓库（SoC repo）
+├── vendor/oneplus/sm8850-modules/     OPLUS 厂商模块
+└── vendor/oneplus/sm8850-devicetrees/ 设备树
+```
+
+`scripts/build-kernel-platform.sh` 会自动 clone/组装上面这些（大仓库用
+`--filter=blob:none --sparse` 只取需要的目录，比如只取 `clang-r536225`），
+创建 manifest 里的 `<linkfile>`（`tools/bazel`、`MODULE.bazel`、`WORKSPACE.bzlmod`、
+`device.bazelrc`、`build/qcom_build_extensions`），然后执行：
 
 ```bash
-adb shell cat /proc/version
+./tools/bazel run \
+  --//build/kernel/kleaf:socrepo=true \
+  --//build/qcom_build_extensions:qtisocrepo=true \
+  --//build/kernel/kleaf:allow_ddk_unsafe_headers \
+  --check_visibility=false \
+  //vendor/oneplus/kernel:canoe_perf_dist -- --destdir=out/dist
 ```
 
-如果 ROM 的内核 **Linux 版本号本身**（例如 `6.12.52`）就不是 6.12.23，那么还需要同时换源码分支：
-用 `kernel_repo` / `kernel_ref` 输入指向对应版本的 `common` 源码树（见下一节）。
+产物落在 `out/dist/`：`Image`、`boot.img`（AVB 签名）、`dtb.img`、`dtbo.img`、
+`vendor_dlkm.*`、`system_dlkm.*`、`modules.list*` 等 —— 就是
+`device/oneplus/infiniti-kernel/{images,modules}` 里那份"预编译内核"的来源。
 
-## 4. 怎么跑
+### 1.3 怎么跑
 
-GitHub → Actions → **Build kernel (OnePlus 15 / SM8850 canoe)** → *Run workflow*
-（也可以直接 push 到 `lineage-24.0` 且改动命中 `scripts/**` 或本工作流文件时自动触发）
+GitHub → Actions → **Build full OSS kernel (SM8850 kernel_platform)** → *Run workflow*。
 
-可调参数（都有默认值）：
+可调输入：`target`（`canoe_perf` = user / `canoe_consolidate` = userdebug）、
+`common_ref`（ACK 分支，默认 `android16-6.12-2026-06`，与本仓库 `android/ACK_SHA`
+记录的 `android16-6.12-2026-06_r3` 一致）、`kleaf_ref`、
+`modules_ref` / `devicetrees_ref`（默认 `lineage-24.0`）。
 
-| 输入 | 默认值 | 说明 |
-| --- | --- | --- |
-| `kernel_repo` | `cctv18/android_kernel_common_oneplus_sm8850` | ACK+OPLUS 的 `common` 源码仓库 |
-| `kernel_ref` | `oneplus/sm8850_v_16.0.0_oneplus_15` | 源码分支（对应一加 15 / 6.12.23） |
-| `kernel_suffix` | `android16-5-ga8f88ad96df3-ab13929693-4k` | 内核发行串后缀，必须与 ROM 匹配 |
-| `use_ccache` | `true` | 用 ccache + Actions 缓存加速二次编译 |
-| `create_release` | `false` | 额外发一个 GitHub Release |
+> 这是重活：要拉几 GB 源码/工具链 + bazel 编译，单次 40–90 分钟属于正常。
+> 想让内核源码 push 后自动编译，在 `build-full-kernel.yml` 的 `on.push.paths`
+> 里加上 `drivers/**`、`arch/**` 等即可。
 
-想用官方源码（可能因为 OPLUS 只开源了一部分而编译失败）可以改成：
+### 1.4 拿到产物之后
 
+1. **替换 ROM 预编译内核**：把 `images/kernel`、`dtb.img`、`dtbo.img` 和
+   `modules/{system_dlkm,vendor_dlkm,vendor_ramdisk}` 覆盖到 ROM 的
+   `device/oneplus/infiniti-kernel/`，再整编 ROM。
+2. **只想换内核（boot-only）**：用 `boot.img`（按当前 slot 刷）：
+   ```bash
+   adb shell getprop ro.boot.slot_suffix
+   fastboot flash boot_a boot.img     # 或 boot_b
+   ```
+   boot-only 不替换 vendor_dlkm/dtbo，必须保证模块版本匹配（见下）。
+
+### 1.5 版本串必须匹配（关键）
+
+厂商模块的 `vermagic` 带着完整发行串。用 OPLUS 官方 6.12.23 源码时会得到类似
+`6.12.23-android16-5-ga8f88ad96df3-ab13929693-4k` 的串；用本仓库（LineageOS 24 那套）
+编译时，脚本会在日志/摘要里打印 `Image` 里实际的 `Linux version ...`，
+请和手机上的对比：
+
+```bash
+adb shell cat /proc/version    # 或 设置 → 关于手机 → 内核版本
 ```
-kernel_repo: OnePlusOSS/android_kernel_common_oneplus_sm8850
-kernel_ref : oneplus/sm8850_b_16.0.0_oneplus_15
-```
 
-## 5. 本地编译（Linux / WSL）
+不一致就别刷 boot-only（模块会拒绝加载）；要一致就得用和 ROM 相同的
+`common` 分支 + 相同 defconfig 编译。
+
+---
+
+## 2. GKI / AnyKernel3 快线（可选）
+
+`build-kernel.yml` 走社区验证过的 `make` 路线：只编 `common`（ACK+OPLUS）里的
+GKI `Image`，用 AOSP LLVM/Clang 19（`r536225`）+ Rust 1.82 编译，
+再打成机型校验过的 AnyKernel3 包（只替换 `boot` 里的 `Image`，不动 ramdisk/dtbo/模块）。
+
+- 默认源码：`cctv18/android_kernel_common_oneplus_sm8850@oneplus/sm8850_v_16.0.0_oneplus_15`（6.12.23）
+- 默认版本后缀：`android16-5-ga8f88ad96df3-ab13929693-4k`（一加 15 / OOS 16.0.0）
+- 输入项：`kernel_repo`、`kernel_ref`、`kernel_suffix`、`use_ccache`
+
+刷入：手机端用 [HorizonKernelFlasher](https://github.com/libxzr/HorizonKernelFlasher/releases)
+或 TWRP 刷 `OKI-OnePlus15-*.zip`；机型不匹配（`infiniti`/`OP5D1`/`CPH274x`/`PLK110`）会中止。
+
+本地跑（Linux/WSL）：
 
 ```bash
 sudo apt-get install -y bc bison flex libssl-dev libelf-dev libdw-dev cpio xz-utils \
-    zip unzip wget curl git python3 dwarves ccache
+    zip unzip wget curl git python3 rsync dwarves ccache
+TARGET=canoe_perf bash scripts/build-kernel-platform.sh    # 全量内核
 KERNEL_SUFFIX=android16-5-ga8f88ad96df3-ab13929693-4k USE_CCACHE=1 \
-  bash scripts/build-oki-kernel.sh
-# 产物在 kernel-workspace/ 下
+  bash scripts/build-oki-kernel.sh                          # GKI + AnyKernel3
 ```
 
-## 6. 刷入
+---
 
-任选其一（需要已解锁 bootloader）：
+## 3. 需要的磁盘/时间（GitHub 托管 runner）
 
-- 手机上用 [HorizonKernelFlasher](https://github.com/libxzr/HorizonKernelFlasher/releases) /
-  KernelSU 管理器刷 `OKI-OnePlus15-*.zip`；
-- TWRP → 安装 → 选择 zip。
+| | 下载 | 磁盘峰值 | 时间 |
+| --- | --- | --- | --- |
+| 全量（kleaf） | ~7–10 GB | ~25–35 GB | 40–90 min |
+| GKI（make） | ~4 GB | ~15 GB | 20–40 min（有 ccache 更快） |
 
-刷机包带机型校验（`do.devicecheck=1`，`infiniti` / `OP5D1` / `CPH274x` / `PLK110`），
-机型不匹配会直接中止，不会刷错。回滚：把 ROM 的 boot 镜像刷回去（或用 ROM 的 OTA 包重刷 boot）。
-
-## 7. 说明与限制
-
-- 本流程**不编译** SoC/厂商部分（本仓库的 `drivers/`、设备树、厂商模块），
-  因此它产出的不是"照本仓库源码编译的完整内核"，而是与 ROM 厂商模块 ABI 匹配的 GKI 内核。
-- 若要产出能替换 `dtbo.img` / `vendor_dlkm` 的完整内核（LineageOS 官方做法），
-  需要按 `kernel_platform` 组装 `common` + `vendor/oneplus/{kernel,sm8850-modules,sm8850-devicetrees}`
-  + `build/kernel` + `prebuilts`，再用 kleaf/bazel 编译 `//vendor/oneplus/kernel:canoe_perf_dist`。
-  这是后续可以继续做的方向。
+工作流里已经做了 runner 磁盘清理（删 dotnet/android/ghc/hostedtoolcache）。

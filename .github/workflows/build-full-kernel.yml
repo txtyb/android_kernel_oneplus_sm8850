@@ -1,0 +1,169 @@
+name: Build full OSS kernel (SM8850 kernel_platform)
+
+# Compiles the complete OnePlus 15 (SM8850 / canoe / infiniti) OSS kernel with
+# kleaf, the same way LineageOS 24 / PixelOS 17 do it for this device:
+#
+#   ./tools/bazel run //vendor/oneplus/kernel:canoe_perf_dist -- --destdir=<dist>
+#
+# The job assembles the kernel platform (ACK common + kleaf + prebuilts +
+# external deps + this SoC repository + sm8850-modules + sm8850-devicetrees) in
+# the runner and uploads the resulting Image / dtb.img / dtbo.img / boot.img /
+# vendor_dlkm / system_dlkm artifacts - i.e. what device/oneplus/infiniti-kernel
+# ships as the "prebuilt kernel".
+#
+# NOTE: this is heavy (multi-GB downloads, bazel build). The `push` trigger is
+# limited to this workflow file so that adding/changing it validates the
+# pipeline; enable builds on kernel source pushes by adding e.g.
+#   paths:
+#     - 'drivers/**'
+#     - 'arch/**'
+#     - 'include/**'
+#     - 'scripts/**'
+
+on:
+  push:
+    branches:
+      - lineage-24.0
+    paths:
+      - '.github/workflows/build-full-kernel.yml'
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'kleaf target variant'
+        required: true
+        default: 'canoe_perf'
+        type: choice
+        options:
+          - canoe_perf
+          - canoe_consolidate
+      common_ref:
+        description: 'ACK (aosp kernel/common) branch'
+        required: true
+        default: 'android16-6.12-2026-06'
+        type: string
+      kleaf_ref:
+        description: 'aosp kernel/build (kleaf) branch'
+        required: true
+        default: 'main-kernel-2025'
+        type: string
+      modules_ref:
+        description: 'android_kernel_oneplus_sm8850-modules branch'
+        required: true
+        default: 'lineage-24.0'
+        type: string
+      devicetrees_ref:
+        description: 'android_kernel_oneplus_sm8850-devicetrees branch'
+        required: true
+        default: 'lineage-24.0'
+        type: string
+      skip_sync:
+        description: 'Skip fetching the platform (reuse a previous sync in the same job only)'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: full-kernel-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Resolve configuration
+        env:
+          IN_TARGET: ${{ github.event.inputs.target }}
+          IN_COMMON: ${{ github.event.inputs.common_ref }}
+          IN_KLEAF: ${{ github.event.inputs.kleaf_ref }}
+          IN_MODULES: ${{ github.event.inputs.modules_ref }}
+          IN_DT: ${{ github.event.inputs.devicetrees_ref }}
+        run: |
+          echo "TARGET=${IN_TARGET:-canoe_perf}" >> "$GITHUB_ENV"
+          echo "COMMON_REF=${IN_COMMON:-android16-6.12-2026-06}" >> "$GITHUB_ENV"
+          echo "KLEAF_REF=${IN_KLEAF:-main-kernel-2025}" >> "$GITHUB_ENV"
+          echo "MODULES_REF=${IN_MODULES:-lineage-24.0}" >> "$GITHUB_ENV"
+          echo "DEVICETREES_REF=${IN_DT:-lineage-24.0}" >> "$GITHUB_ENV"
+          {
+            echo "### kernel platform build configuration"
+            echo
+            echo "| item | value |"
+            echo "| --- | --- |"
+            echo "| target | \`${IN_TARGET:-canoe_perf}\` |"
+            echo "| ACK common | \`${IN_COMMON:-android16-6.12-2026-06}\` |"
+            echo "| kleaf | \`${IN_KLEAF:-main-kernel-2025}\` |"
+            echo "| modules | \`${IN_MODULES:-lineage-24.0}\` |"
+            echo "| devicetrees | \`${IN_DT:-lineage-24.0}\` |"
+            echo "| soc repo | \`${GITHUB_REPOSITORY}@${GITHUB_REF_NAME}\` (${GITHUB_SHA:0:12}) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache \
+            /usr/local/share/boost /usr/local/share/powershell /usr/share/swift \
+            /opt/az /opt/microsoft /usr/lib/jvm /usr/local/.ghcup || true
+          sudo apt-get clean
+          df -h
+          free -h
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            bc bison flex libssl-dev libelf-dev libdw-dev cpio xz-utils zip unzip \
+            wget curl git python3 rsync dwarves
+          echo "--- host tools ---"
+          python3 --version
+          rsync --version | head -n1
+
+      - name: Build kernel platform
+        run: |
+          set -o pipefail
+          KROOT="$GITHUB_WORKSPACE/kernel-platform" \
+          SOC_SRC="$GITHUB_WORKSPACE" \
+          TARGET="$TARGET" \
+          COMMON_REF="$COMMON_REF" \
+          KLEAF_REF="$KLEAF_REF" \
+          MODULES_REF="$MODULES_REF" \
+          DEVICETREES_REF="$DEVICETREES_REF" \
+          JOBS="$(nproc --all)" \
+          bash scripts/build-kernel-platform.sh 2>&1 | tee build-full.log
+
+      - name: Upload kernel artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: OnePlus15-full-kernel-${{ env.TARGET }}
+          path: |
+            kernel-platform/build-info.txt
+            kernel-platform/out/dist/Image
+            kernel-platform/out/dist/*.img
+            kernel-platform/out/dist/*.ko
+            kernel-platform/out/dist/*.dtb
+            kernel-platform/out/dist/*.dtbo
+            kernel-platform/out/dist/modules.*
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish failure log to run summary
+        if: failure()
+        run: |
+          {
+            echo "### Full kernel build failed"
+            echo
+            echo '```text'
+            tail -n 300 build-full.log 2>/dev/null || echo "no build-full.log"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Free disk space report
+        if: always()
+        run: df -h
