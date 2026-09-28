@@ -26,6 +26,7 @@ on:
       - lineage-24.0
     paths:
       - '.github/workflows/build-full-kernel.yml'
+      - 'scripts/build-kernel-platform.sh'
   workflow_dispatch:
     inputs:
       target:
@@ -67,7 +68,7 @@ permissions:
 
 concurrency:
   group: full-kernel-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
