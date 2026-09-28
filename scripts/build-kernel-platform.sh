@@ -294,11 +294,14 @@ BAZEL_FLAGS=(
 	--check_visibility=false
 	--no//build/kernel/kleaf:zstd_dwarf_compression
 	--//build/kernel/kleaf:allow_ddk_unsafe_headers
-	--//build/kernel/kleaf:socrepo=true
 	--//build/qcom_build_extensions:qtisocrepo=true
 	--//build/kernel/kleaf:user_ddk_unsafe_headers=//vendor/oneplus/kernel:unsafe_headers_qcom_group
 	--config=stamp
 )
+# NOTE: the soc repo's device.bazelrc also sets --//build/kernel/kleaf:socrepo=true,
+# but that flag only exists in the OPLUS fork of kleaf.  LineageOS builds this tree
+# with the aosp kernel/build, and aosp kleaf has no such build setting, so it is
+# deliberately not passed here (aosp kleaf also ignores device.bazelrc).
 # shellcheck disable=SC2206
 [ -n "$EXTRA_BAZEL_FLAGS" ] && BAZEL_FLAGS+=($EXTRA_BAZEL_FLAGS)
 
