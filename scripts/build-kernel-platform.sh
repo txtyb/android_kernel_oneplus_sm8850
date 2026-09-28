@@ -267,15 +267,21 @@ rsync -a --delete \
 # ---------------------------------------------------------------------------
 # 3. workspace glue (what the repo manifests express as <linkfile>)
 # ---------------------------------------------------------------------------
+# NOTE on device.bazelrc: the SoC repo ships one, but it sets the OPLUS-only
+# build setting //build/kernel/kleaf:socrepo, which does not exist in the aosp
+# kleaf this tree is built with (kleaf/common.bazelrc does
+# "try-import %workspace%/device.bazelrc", so the file is picked up
+# automatically).  The LineageOS kernel-6.12 manifest does not create it either;
+# every setting we actually need is passed on the bazel command line below.
 log "creating workspace link files"
 mkdir -p tools
-ln -sfn build/kernel/kleaf/bazel.sh tools/bazel
+ln -sfn ../build/kernel/kleaf/bazel.sh tools/bazel
 ln -sfn build/kernel/kleaf/bzlmod/bazel.MODULE.bazel MODULE.bazel
 ln -sfn build/kernel/kleaf/bzlmod/bazel.WORKSPACE.bzlmod WORKSPACE.bzlmod
-ln -sfn vendor/oneplus/kernel/device.bazelrc device.bazelrc
 mkdir -p build
 ln -sfn ../vendor/oneplus/kernel/qcom_build_extensions build/qcom_build_extensions
-for l in tools/bazel MODULE.bazel WORKSPACE.bzlmod device.bazelrc build/qcom_build_extensions; do
+rm -f device.bazelrc
+for l in tools/bazel MODULE.bazel WORKSPACE.bzlmod build/qcom_build_extensions; do
 	printf '  %-32s -> %s\n' "$l" "$(readlink "$l" 2>/dev/null || echo '(not a symlink)')"
 	[ -e "$l" ] || warn "$l is dangling"
 done
