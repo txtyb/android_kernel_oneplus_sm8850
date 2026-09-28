@@ -44,7 +44,11 @@ SOC_SRC=${SOC_SRC:-$PWD}
 KLEAF_REF=${KLEAF_REF:-main-kernel-2025}
 COMMON_REF=${COMMON_REF:-android16-6.12-2026-06}
 PREBUILT_REF=${PREBUILT_REF:-main-kernel-2025}
+# GBL (bootable/libbootloader) lives on its own branch in aosp.
+GBL_REF=${GBL_REF:-gbl-android16}
+COMMON_MODULES_REF=${COMMON_MODULES_REF:-android16-6.12}
 NDK_REF=${NDK_REF:-main-kernel-2025}
+COMMON_MODULES=${COMMON_MODULES:-1}
 CLANG_VERSION=${CLANG_VERSION:-clang-r536225}
 RUST_VERSION=${RUST_VERSION:-1.82.0}
 MODULES_REPO=${MODULES_REPO:-OnePlus-SM8850-Development/android_kernel_oneplus_sm8850-modules}
@@ -193,8 +197,24 @@ if [ "$SKIP_SYNC" != "1" ]; then
 	done
 	fetch_bg clone_full "$AOSP/platform/system/tools/mkbootimg" tools/mkbootimg "$PREBUILT_REF"
 	fetch_bg clone_full "$AOSP/platform/system/libufdt" external/libufdt "$PREBUILT_REF"
+	# kleaf's WORKSPACE.bzlmod declares local_repository(name = "gbl", path =
+	# "bootable/libbootloader/gbl"), so that path has to exist.
+	fetch_bg clone_full "$AOSP/platform/bootable/libbootloader" bootable/libbootloader "$GBL_REF"
+	fetch_bg clone_full "$AOSP/platform/system/core" system/core "$PREBUILT_REF"
 	fetch_wait
 	disk
+
+	if [ "$COMMON_MODULES" = "1" ]; then
+		log "fetching common-modules"
+		fetch_bg clone_full "$AOSP/kernel/common-modules/trusty" common-modules/trusty "$KLEAF_REF"
+		fetch_bg clone_full "$AOSP/platform/external/virtio-media" common-modules/virtio-media "$KLEAF_REF"
+		fetch_bg clone_full "$AOSP/kernel/common-modules/wonder" common-modules/wonder \
+			"$COMMON_MODULES_REF"
+		fetch_bg clone_full "$AOSP/kernel/common-modules/virtual-device" \
+			common-modules/virtual-device "$COMMON_MODULES_REF"
+		fetch_wait
+		disk
+	fi
 
 	log "fetching OnePlus vendor repositories"
 	fetch_bg clone_full "$GH/$MODULES_REPO" vendor/oneplus/sm8850-modules "$MODULES_REF"
@@ -226,6 +246,7 @@ for p in \
 	prebuilts/kernel-build-tools/bazel/linux-x86_64/bazel \
 	prebuilts/clang/host/linux-x86/"$CLANG_VERSION"/bin/clang \
 	prebuilts/jdk/jdk11 \
+	bootable/libbootloader/gbl \
 	tools/mkbootimg/mkbootimg.py; do
 	if [ -e "$p" ]; then echo "  ok      $p"; else warn "missing $p"; fi
 done
