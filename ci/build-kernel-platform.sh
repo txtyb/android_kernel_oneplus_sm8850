@@ -34,8 +34,10 @@ set -euo pipefail
 
 AOSP=${AOSP:-https://android.googlesource.com}
 GH=${GH:-https://github.com}
-# Mirror of aosp kernel/build, used when the AOSP checkout does not provide kleaf.
-KLEAF_MIRROR=${KLEAF_MIRROR:-$GH/OnePlus-SM8850-Development/kernel_build}
+# kleaf (aosp kernel/build) comes from the OnePlus-SM8850-Development mirror of
+# aosp kernel/build; the aosp repository is only a fallback.
+KLEAF_REPO=${KLEAF_REPO:-$GH/OnePlus-SM8850-Development/kernel_build}
+KLEAF_FALLBACK=${KLEAF_FALLBACK:-$AOSP/kernel/build}
 # Workspace (ROOT_DIR) and the checkout of this soc repository that goes into
 # vendor/oneplus/kernel.
 KROOT=${KROOT:-$PWD/kernel-platform}
@@ -123,13 +125,18 @@ clone_rust() { # clone_rust <url> <dir> <branch> [version]
 	log "clone (partial) $dir"
 	git_retry clone --depth=1 --no-tags --filter=blob:none --sparse -b "$branch" "$url" "$dir" ||
 		die "clone failed: $url"
-	local path="linux-x86"
-	if [ -n "$version" ]; then
-		if git -C "$dir" ls-tree -d --name-only "HEAD:linux-x86" 2>/dev/null | grep -qx "$version"; then
-			path="linux-x86/$version"
-		else
-			warn "rust $version not in the tree, checking out all of linux-x86"
+	local path="linux-x86" cand
+	local versions
+	versions=$(git -C "$dir" ls-tree -d --name-only "HEAD:linux-x86" 2>/dev/null || true)
+	for cand in "$version" "${version%%.u*}" "${version%%.p*}" "${version%%.*}"; do
+		[ -z "$cand" ] && continue
+		if printf '%s\n' "$versions" | grep -qx "$cand"; then
+			path="linux-x86/$cand"
+			break
 		fi
+	done
+	if [ "$path" = "linux-x86" ] && [ -n "$version" ]; then
+		warn "rust $version has no matching directory, checking out all of linux-x86"
 	fi
 	(cd "$dir" && git sparse-checkout set "$path") || die "sparse-checkout failed in $dir"
 }
@@ -162,9 +169,31 @@ disk
 if [ "$SKIP_SYNC" != "1" ]; then
 	log "fetching ACK + kleaf"
 	fetch_bg clone_full "$AOSP/kernel/common" common "$COMMON_REF"
-	fetch_bg clone_full "$AOSP/kernel/build" build/kernel "$KLEAF_REF"
+	fetch_bg clone_full "$KLEAF_REPO" build/kernel "$KLEAF_REF"
 	fetch_wait
 	disk
+
+	# kleaf derives the required clang/rust toolchains from the ACK tree's
+	# build.config.constants (//common:build.config.constants via
+	# kernel_toolchain_ext), so follow whatever it pins instead of guessing.
+	if [ -f common/build.config.constants ]; then
+		CONST_CLANG=$(sed -n 's/^CLANG_VERSION=//p' common/build.config.constants | head -n1 | tr -d '\r')
+		CONST_RUST=$(sed -n 's/^RUSTC_VERSION=//p' common/build.config.constants | head -n1 | tr -d '\r')
+		if [ -n "$CONST_CLANG" ] && [ "$CONST_CLANG" != "$CLANG_VERSION" ]; then
+			# build.config.constants stores "r536225" while the checkout under
+			# prebuilts/clang/host/linux-x86 is called "clang-r536225".
+			case "$CONST_CLANG" in
+			clang-*) ;;
+			*) CONST_CLANG="clang-$CONST_CLANG" ;;
+			esac
+			log "clang version pinned by common: $CONST_CLANG (was $CLANG_VERSION)"
+			CLANG_VERSION=$CONST_CLANG
+		fi
+		if [ -n "$CONST_RUST" ] && [ "$CONST_RUST" != "$RUST_VERSION" ]; then
+			log "rust version pinned by common: $CONST_RUST (was $RUST_VERSION)"
+			RUST_VERSION=$CONST_RUST
+		fi
+	fi
 
 	log "fetching prebuilts"
 	# The clang prebuilt repository is huge (every clang version ever shipped),
@@ -235,9 +264,9 @@ fi
 log "verifying platform layout"
 if [ ! -f build/kernel/kleaf/bazel.sh ]; then
 	warn "build/kernel has no kleaf/bazel.sh - contents: $(ls build/kernel 2>/dev/null | tr '\n' ' ')"
-	warn "falling back to the GitHub mirror of aosp kernel/build: $KLEAF_MIRROR"
+	warn "falling back to $KLEAF_FALLBACK"
 	rm -rf build/kernel
-	git_retry clone --depth=1 --no-tags -b "$KLEAF_REF" "$KLEAF_MIRROR" build/kernel ||
+	git_retry clone --depth=1 --no-tags -b "$KLEAF_REF" "$KLEAF_FALLBACK" build/kernel ||
 		die "cannot fetch kleaf (kernel/build)"
 fi
 [ -f common/Makefile ] || die "common/ (ACK) is missing"
@@ -267,6 +296,7 @@ mkdir -p vendor/oneplus/kernel
 rsync -a --delete \
 	--exclude '.git/' \
 	--exclude '.github/' \
+	--exclude 'ci/' \
 	--exclude 'kernel-platform/' \
 	--exclude 'kernel-workspace/' \
 	"$SOC_SRC/" vendor/oneplus/kernel/

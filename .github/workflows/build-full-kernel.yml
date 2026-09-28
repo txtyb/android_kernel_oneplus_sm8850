@@ -12,13 +12,12 @@ name: Build full OSS kernel (SM8850 kernel_platform)
 # ships as the "prebuilt kernel".
 #
 # NOTE: this is heavy (multi-GB downloads, bazel build). The `push` trigger is
-# limited to this workflow file so that adding/changing it validates the
-# pipeline; enable builds on kernel source pushes by adding e.g.
+# limited to this workflow file and the build script; enable builds on kernel
+# source pushes by adding e.g.
 #   paths:
 #     - 'drivers/**'
 #     - 'arch/**'
 #     - 'include/**'
-#     - 'scripts/**'
 
 on:
   push:
@@ -26,7 +25,7 @@ on:
       - lineage-24.0
     paths:
       - '.github/workflows/build-full-kernel.yml'
-      - 'scripts/build-kernel-platform.sh'
+      - 'ci/build-kernel-platform.sh'
   workflow_dispatch:
     inputs:
       target:
@@ -136,7 +135,7 @@ jobs:
           MODULES_REF="$MODULES_REF" \
           DEVICETREES_REF="$DEVICETREES_REF" \
           JOBS="$(nproc --all)" \
-          bash scripts/build-kernel-platform.sh 2>&1 | tee build-full.log
+          bash ci/build-kernel-platform.sh 2>&1 | tee build-full.log
 
       - name: Upload kernel artifacts
         if: success()
