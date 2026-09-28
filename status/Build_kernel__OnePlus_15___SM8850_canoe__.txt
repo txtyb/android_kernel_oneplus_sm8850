@@ -1,8 +1,8 @@
 workflow : Build kernel (OnePlus 15 / SM8850 canoe)
-run      : #6 (36376711505)
+run      : #7 (36377458468)
 status   : success
-commit   : 3a15c44ce9ff7f6b380f94a33d8b7b2aea4fa7df
-url      : https://github.com/txtyb/android_kernel_oneplus_sm8850/actions/runs/36376711505
+commit   : 4509dc905d44f7e6917e13f80ed011c0dad784e9
+url      : https://github.com/txtyb/android_kernel_oneplus_sm8850/actions/runs/36377458468
 
 --- build-info.txt ---
 kernel source : cctv18/android_kernel_common_oneplus_sm8850 @ oneplus/sm8850_v_16.0.0_oneplus_15
@@ -12,6 +12,6 @@ package       : OKI-OnePlus15-6.12.23-android16-5-ga8f88ad96df3-ab13929693-4k.zi
 flash with    : AnyKernel3 capable flasher (e.g. HorizonKernelFlasher) or TWRP
 
 --- Image ---
-a3f340e849ebc8021a99e246a725f8501bf81d1863a45d951926209418c35904  common/out/arch/arm64/boot/Image
+313df327a8c90b7ab43ccd9095b6d76cfa77d74345e3488e75fad100de7a6e8e  common/out/arch/arm64/boot/Image
 --- package ---
-e25e2a985d32e113bd0e67d75ca323cb5986772e152cba1c1860a76de13a9382  OKI-OnePlus15-6.12.23-android16-5-ga8f88ad96df3-ab13929693-4k.zip
+9eea94e4a82db2c772539d63fb092ebae8e0725e5b7718eacfc15216a0842b7f  OKI-OnePlus15-6.12.23-android16-5-ga8f88ad96df3-ab13929693-4k.zip
