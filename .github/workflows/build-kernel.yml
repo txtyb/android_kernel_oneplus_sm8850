@@ -1,0 +1,160 @@
+name: Build kernel (OnePlus 15 / SM8850 canoe)
+
+# Builds the OPLUS/OnePlus 15 (SM8850 "canoe", device "infiniti") OSS GKI
+# kernel `Image` and packs it into an AnyKernel3 flashable zip.
+#
+# See README-kernel-build.md for what this builds, why it only builds the
+# GKI part, and how to flash / how to pick the right source revision.
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_repo:
+        description: 'ACL/OPLUS "common" kernel tree (<owner>/<repo>)'
+        required: true
+        default: 'cctv18/android_kernel_common_oneplus_sm8850'
+        type: string
+      kernel_ref:
+        description: 'Branch/ref of the common tree (6.12.23 = OnePlus 15 / OOS 16.0.0)'
+        required: true
+        default: 'oneplus/sm8850_v_16.0.0_oneplus_15'
+        type: string
+      kernel_suffix:
+        description: 'Kernel release suffix that must match the ROM (vermagic)'
+        required: true
+        default: 'android16-5-ga8f88ad96df3-ab13929693-4k'
+        type: string
+      use_ccache:
+        description: 'Use ccache (recommended, speeds up repeated builds)'
+        required: true
+        default: true
+        type: boolean
+      create_release:
+        description: 'Create a GitHub release with the flashable zip'
+        required: true
+        default: false
+        type: boolean
+  push:
+    branches:
+      - lineage-24.0
+    paths:
+      - '.github/workflows/build-kernel.yml'
+      - 'scripts/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kernel-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve configuration
+        env:
+          IN_REPO: ${{ github.event.inputs.kernel_repo }}
+          IN_REF: ${{ github.event.inputs.kernel_ref }}
+          IN_SUFFIX: ${{ github.event.inputs.kernel_suffix }}
+          IN_CCACHE: ${{ github.event.inputs.use_ccache }}
+        run: |
+          echo "KERNEL_REPO=${IN_REPO:-cctv18/android_kernel_common_oneplus_sm8850}" >> "$GITHUB_ENV"
+          echo "KERNEL_REF=${IN_REF:-oneplus/sm8850_v_16.0.0_oneplus_15}" >> "$GITHUB_ENV"
+          echo "KERNEL_SUFFIX=${IN_SUFFIX:-android16-5-ga8f88ad96df3-ab13929693-4k}" >> "$GITHUB_ENV"
+          if [ -z "${IN_CCACHE}" ]; then IN_CCACHE=true; fi
+          echo "USE_CCACHE=$([ "${IN_CCACHE}" = "true" ] && echo 1 || echo 0)" >> "$GITHUB_ENV"
+          echo "CCACHE_DIR=$HOME/.ccache-oki" >> "$GITHUB_ENV"
+          echo "CCACHE_MAXSIZE=3G" >> "$GITHUB_ENV"
+          {
+            echo "### Kernel build configuration"
+            echo
+            echo "| item | value |"
+            echo "| --- | --- |"
+            echo "| source tree | \`${IN_REPO:-cctv18/android_kernel_common_oneplus_sm8850}\` |"
+            echo "| source ref | \`${IN_REF:-oneplus/sm8850_v_16.0.0_oneplus_15}\` |"
+            echo "| kernel release suffix | \`${IN_SUFFIX:-android16-5-ga8f88ad96df3-ab13929693-4k}\` |"
+            echo "| ccache | ${IN_CCACHE:-true} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            bc bison flex libssl-dev libelf-dev libdw-dev cpio xz-utils zip unzip \
+            wget curl git python3 dwarves
+          echo "--- host tools ---"
+          make --version | head -n1
+          pahole --version || true
+
+      - name: Restore ccache
+        if: env.USE_CCACHE == '1'
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ env.KERNEL_REPO }}-${{ env.KERNEL_REF }}-${{ env.KERNEL_SUFFIX }}
+          restore-keys: |
+            ccache-${{ env.KERNEL_REPO }}-${{ env.KERNEL_REF }}-
+
+      - name: Build kernel
+        run: |
+          set -o pipefail
+          WS="$GITHUB_WORKSPACE/kernel-workspace" \
+          KERNEL_REPO="$KERNEL_REPO" \
+          KERNEL_REF="$KERNEL_REF" \
+          KERNEL_SUFFIX="$KERNEL_SUFFIX" \
+          USE_CCACHE="$USE_CCACHE" \
+          CCACHE_DIR="$CCACHE_DIR" \
+          CCACHE_MAXSIZE="$CCACHE_MAXSIZE" \
+          JOBS="$(nproc --all)" \
+          bash scripts/build-oki-kernel.sh 2>&1 | tee build.log
+
+      - name: ccache statistics
+        if: always() && env.USE_CCACHE == '1'
+        run: ccache -s || true
+
+      - name: Upload flashable zip and Image
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: OnePlus15-kernel
+          path: |
+            kernel-workspace/OKI-OnePlus15-*.zip
+            kernel-workspace/build-info.txt
+            kernel-workspace/common/out/arch/arm64/boot/Image
+            kernel-workspace/common/out/.config
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish failure log to run summary
+        if: failure()
+        run: |
+          {
+            echo "### Build failed"
+            echo
+            echo '```text'
+            tail -n 250 build.log 2>/dev/null || echo "no build.log"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create release
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: kernel-${{ github.run_number }}
+          name: OnePlus 15 OSS kernel ${{ github.run_number }}
+          body_path: kernel-workspace/build-info.txt
+          files: kernel-workspace/OKI-OnePlus15-*.zip
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

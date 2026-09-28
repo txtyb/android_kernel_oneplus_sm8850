@@ -183,3 +183,9 @@ sphinx_*/
 /rust-project.json
 
 git_fetch_and_checkout.sh
+
+# GitHub Actions workflows (the ".*" rule above would otherwise hide them)
+!.github/
+
+# local/CI kernel build workspace
+/kernel-workspace/
