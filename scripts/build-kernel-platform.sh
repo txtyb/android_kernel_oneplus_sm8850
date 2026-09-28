@@ -9,7 +9,6 @@
 #   $KROOT/                                  (ROOT_DIR, the bazel workspace)
 #   ├── build/kernel/                        <- aosp kernel/build (kleaf)
 #   ├── common/                              <- aosp kernel/common (ACK)
-#   ├── common-modules/*                     <- aosp kernel/common-modules
 #   ├── prebuilts/*                          <- aosp prebuilts (clang, rust, tools ...)
 #   ├── external/*                           <- aosp external deps
 #   ├── tools/{bazel,mkbootimg}
@@ -35,6 +34,8 @@ set -euo pipefail
 
 AOSP=${AOSP:-https://android.googlesource.com}
 GH=${GH:-https://github.com}
+# Mirror of aosp kernel/build, used when the AOSP checkout does not provide kleaf.
+KLEAF_MIRROR=${KLEAF_MIRROR:-$GH/OnePlus-SM8850-Development/kernel_build}
 # Workspace (ROOT_DIR) and the checkout of this soc repository that goes into
 # vendor/oneplus/kernel.
 KROOT=${KROOT:-$PWD/kernel-platform}
@@ -44,6 +45,8 @@ KLEAF_REF=${KLEAF_REF:-main-kernel-2025}
 COMMON_REF=${COMMON_REF:-android16-6.12-2026-06}
 PREBUILT_REF=${PREBUILT_REF:-main-kernel-2025}
 NDK_REF=${NDK_REF:-main-kernel-2025}
+CLANG_VERSION=${CLANG_VERSION:-clang-r536225}
+RUST_VERSION=${RUST_VERSION:-1.82.0}
 MODULES_REPO=${MODULES_REPO:-OnePlus-SM8850-Development/android_kernel_oneplus_sm8850-modules}
 MODULES_REF=${MODULES_REF:-lineage-24.0}
 DEVICETREES_REPO=${DEVICETREES_REPO:-OnePlus-SM8850-Development/android_kernel_oneplus_sm8850-devicetrees}
@@ -52,7 +55,6 @@ DEVICETREES_REF=${DEVICETREES_REF:-lineage-24.0}
 TARGET=${TARGET:-canoe_perf}
 JOBS=${JOBS:-$(nproc --all 2>/dev/null || echo 4)}
 DIST_DIR=${DIST_DIR:-$KROOT/out/dist}
-COMMON_MODULES=${COMMON_MODULES:-1}
 EXTRA_BAZEL_FLAGS=${EXTRA_BAZEL_FLAGS:-}
 SKIP_SYNC=${SKIP_SYNC:-0}
 REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -60,13 +62,27 @@ REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 log() { printf '\n\033[1;32m==> %s\033[0m\n' "$*"; }
 warn() { printf '\n\033[1;33m!!! %s\033[0m\n' "$*" >&2; }
 die() { printf '\n\033[1;31m!!! %s\033[0m\n' "$*" >&2; exit 1; }
+disk() { df -h "$KROOT" | tail -n1 | sed 's/^/    disk: /'; }
 
-git_retry() { # git_retry <clone args...>
-	local i
+PIDS=()
+fetch_bg() { # fetch_bg <function> <args...>
+	"$@" &
+	PIDS+=($!)
+}
+fetch_wait() {
+	local pid rc=0
+	for pid in "${PIDS[@]}"; do
+		wait "$pid" || rc=1
+	done
+	PIDS=()
+	[ "$rc" -eq 0 ] || die "one or more fetches failed"
+}
+
+git_retry() { # git_retry <git args...>
+	local i last
+	last=${!#}
 	for i in 1 2 3; do
 		if git "$@"; then return 0; fi
-		# drop a partially fetched repository before retrying
-		local last=${!#}
 		rm -rf "$last" 2>/dev/null || true
 		sleep 5
 	done
@@ -96,6 +112,24 @@ clone_sparse() { # clone_sparse <url> <dir> <branch> <path>...
 	(cd "$dir" && git sparse-checkout set "$@") || die "sparse-checkout failed in $dir"
 }
 
+clone_rust() { # clone_rust <url> <dir> <branch> [version]
+	local url=$1 dir=$2 branch=$3 version=${4:-}
+	[ -d "$dir/.git" ] && return 0
+	mkdir -p "$(dirname "$dir")"
+	log "clone (partial) $dir"
+	git_retry clone --depth=1 --no-tags --filter=blob:none --sparse -b "$branch" "$url" "$dir" ||
+		die "clone failed: $url"
+	local path="linux-x86"
+	if [ -n "$version" ]; then
+		if git -C "$dir" ls-tree -d --name-only "HEAD:linux-x86" 2>/dev/null | grep -qx "$version"; then
+			path="linux-x86/$version"
+		else
+			warn "rust $version not in the tree, checking out all of linux-x86"
+		fi
+	fi
+	(cd "$dir" && git sparse-checkout set "$path") || die "sparse-checkout failed in $dir"
+}
+
 # ---------------------------------------------------------------------------
 # 0. checks
 # ---------------------------------------------------------------------------
@@ -105,7 +139,7 @@ cat <<EOF
   soc checkout : $SOC_SRC
   kleaf        : $KLEAF_REF   (aosp kernel/build)
   ACK common   : $COMMON_REF  (aosp kernel/common)
-  prebuilts    : $PREBUILT_REF
+  prebuilts    : $PREBUILT_REF   clang=$CLANG_VERSION rust=$RUST_VERSION
   target       : $TARGET
   dist         : $DIST_DIR
 EOF
@@ -116,26 +150,31 @@ done
 
 mkdir -p "$KROOT"
 cd "$KROOT"
+disk
 
 # ---------------------------------------------------------------------------
 # 1. fetch the kernel platform
 # ---------------------------------------------------------------------------
 if [ "$SKIP_SYNC" != "1" ]; then
 	log "fetching ACK + kleaf"
-	clone_full "$AOSP/kernel/build" build/kernel "$KLEAF_REF"
-	clone_full "$AOSP/kernel/common" common "$COMMON_REF"
+	fetch_bg clone_full "$AOSP/kernel/common" common "$COMMON_REF"
+	fetch_bg clone_full "$AOSP/kernel/build" build/kernel "$KLEAF_REF"
+	fetch_wait
+	disk
 
 	log "fetching prebuilts"
-	clone_sparse "$AOSP/platform/prebuilts/clang/host/linux-x86" \
-		prebuilts/clang/host/linux-x86 "$PREBUILT_REF" clang-r536225
-	clone_full "$AOSP/platform/prebuilts/build-tools" prebuilts/build-tools "$PREBUILT_REF"
-	clone_sparse "$AOSP/platform/prebuilts/clang-tools" prebuilts/clang-tools "$PREBUILT_REF" linux-x86
-	clone_full "$AOSP/kernel/prebuilts/build-tools" prebuilts/kernel-build-tools "$PREBUILT_REF"
-	clone_full "$AOSP/platform/prebuilts/rust" prebuilts/rust "$PREBUILT_REF"
-	clone_full "$AOSP/platform/prebuilts/jdk/jdk11" prebuilts/jdk/jdk11 "$PREBUILT_REF"
-	clone_full "$AOSP/platform/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8" \
-		prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8 "$PREBUILT_REF"
-	clone_full "$AOSP/toolchain/prebuilts/ndk/r26" prebuilts/ndk-r26 "$NDK_REF"
+	fetch_bg clone_sparse "$AOSP/platform/prebuilts/clang/host/linux-x86" \
+		prebuilts/clang/host/linux-x86 "$PREBUILT_REF" "$CLANG_VERSION"
+	fetch_bg clone_full "$AOSP/platform/prebuilts/build-tools" prebuilts/build-tools "$PREBUILT_REF"
+	fetch_bg clone_sparse "$AOSP/platform/prebuilts/clang-tools" prebuilts/clang-tools "$PREBUILT_REF" linux-x86
+	fetch_bg clone_full "$AOSP/kernel/prebuilts/build-tools" prebuilts/kernel-build-tools "$PREBUILT_REF"
+	fetch_bg clone_rust "$AOSP/platform/prebuilts/rust" prebuilts/rust "$PREBUILT_REF" "$RUST_VERSION"
+	fetch_bg clone_full "$AOSP/platform/prebuilts/jdk/jdk11" prebuilts/jdk/jdk11 "$PREBUILT_REF"
+	fetch_bg clone_sparse "$AOSP/platform/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8" \
+		prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8 "$PREBUILT_REF" sysroot
+	fetch_bg clone_full "$AOSP/toolchain/prebuilts/ndk/r26" prebuilts/ndk-r26 "$NDK_REF"
+	fetch_wait
+	disk
 
 	log "fetching external dependencies"
 	for p in \
@@ -150,23 +189,47 @@ if [ "$SKIP_SYNC" != "1" ]; then
 		external/bazelbuild-rules_rust external/bazelbuild-rules_shell \
 		external/rust/android-crates-io external/rust/crates/smoltcp \
 		external/rust/crates/zune-inflate; do
-		clone_full "$AOSP/platform/$p" "$p" "$PREBUILT_REF" &
+		fetch_bg clone_full "$AOSP/platform/$p" "$p" "$PREBUILT_REF"
 	done
-	wait
-	clone_full "$AOSP/platform/system/tools/mkbootimg" tools/mkbootimg "$PREBUILT_REF"
-	clone_full "$AOSP/platform/system/libufdt" external/libufdt "$PREBUILT_REF"
-
-	if [ "$COMMON_MODULES" = "1" ]; then
-		log "fetching common-modules"
-		clone_full "$AOSP/kernel/common-modules/trusty" common-modules/trusty "$KLEAF_REF"
-		clone_full "$AOSP/platform/external/virtio-media" common-modules/virtio-media "$KLEAF_REF"
-	fi
+	fetch_bg clone_full "$AOSP/platform/system/tools/mkbootimg" tools/mkbootimg "$PREBUILT_REF"
+	fetch_bg clone_full "$AOSP/platform/system/libufdt" external/libufdt "$PREBUILT_REF"
+	fetch_wait
+	disk
 
 	log "fetching OnePlus vendor repositories"
-	clone_full "$GH/$MODULES_REPO" vendor/oneplus/sm8850-modules "$MODULES_REF" &
-	clone_full "$GH/$DEVICETREES_REPO" vendor/oneplus/sm8850-devicetrees "$DEVICETREES_REF" &
-	wait
+	fetch_bg clone_full "$GH/$MODULES_REPO" vendor/oneplus/sm8850-modules "$MODULES_REF"
+	fetch_bg clone_full "$GH/$DEVICETREES_REPO" vendor/oneplus/sm8850-devicetrees "$DEVICETREES_REF"
+	fetch_wait
+	disk
 fi
+
+# ---------------------------------------------------------------------------
+# 1b. verify the platform (and repair what is missing)
+# ---------------------------------------------------------------------------
+log "verifying platform layout"
+if [ ! -f build/kernel/kleaf/bazel.sh ]; then
+	warn "build/kernel has no kleaf/bazel.sh - contents: $(ls build/kernel 2>/dev/null | tr '\n' ' ')"
+	warn "falling back to the GitHub mirror of aosp kernel/build: $KLEAF_MIRROR"
+	rm -rf build/kernel
+	git_retry clone --depth=1 --no-tags -b "$KLEAF_REF" "$KLEAF_MIRROR" build/kernel ||
+		die "cannot fetch kleaf (kernel/build)"
+fi
+[ -f common/Makefile ] || die "common/ (ACK) is missing"
+[ -d vendor/oneplus/sm8850-modules ] || die "vendor/oneplus/sm8850-modules is missing"
+[ -d vendor/oneplus/sm8850-devicetrees ] || die "vendor/oneplus/sm8850-devicetrees is missing"
+
+for p in \
+	build/kernel/kleaf/bazel.sh \
+	build/kernel/kleaf/bzlmod/bazel.MODULE.bazel \
+	build/kernel/kleaf/bzlmod/bazel.WORKSPACE.bzlmod \
+	prebuilts/build-tools/linux_musl-x86/bin/py3-cmd \
+	prebuilts/kernel-build-tools/bazel/linux-x86_64/bazel \
+	prebuilts/clang/host/linux-x86/"$CLANG_VERSION"/bin/clang \
+	prebuilts/jdk/jdk11 \
+	tools/mkbootimg/mkbootimg.py; do
+	if [ -e "$p" ]; then echo "  ok      $p"; else warn "missing $p"; fi
+done
+ls -la build/kernel | head -n 12 || true
 
 # ---------------------------------------------------------------------------
 # 2. install this repository as vendor/oneplus/kernel
@@ -191,12 +254,20 @@ ln -sfn build/kernel/kleaf/bzlmod/bazel.WORKSPACE.bzlmod WORKSPACE.bzlmod
 ln -sfn vendor/oneplus/kernel/device.bazelrc device.bazelrc
 mkdir -p build
 ln -sfn ../vendor/oneplus/kernel/qcom_build_extensions build/qcom_build_extensions
+for l in tools/bazel MODULE.bazel WORKSPACE.bzlmod device.bazelrc build/qcom_build_extensions; do
+	printf '  %-32s -> %s\n' "$l" "$(readlink "$l" 2>/dev/null || echo '(not a symlink)')"
+	[ -e "$l" ] || warn "$l is dangling"
+done
 
 # ---------------------------------------------------------------------------
 # 4. build with kleaf
 # ---------------------------------------------------------------------------
 log "building //vendor/oneplus/kernel:${TARGET}_dist"
 mkdir -p "$DIST_DIR"
+
+KLEAF_BAZEL="$KROOT/build/kernel/kleaf/bazel.sh"
+[ -f "$KLEAF_BAZEL" ] || die "kleaf entry point not found: $KLEAF_BAZEL"
+[ -x "$KLEAF_BAZEL" ] || chmod +x "$KLEAF_BAZEL"
 
 BAZEL_FLAGS=(
 	--check_visibility=false
@@ -210,7 +281,7 @@ BAZEL_FLAGS=(
 # shellcheck disable=SC2206
 [ -n "$EXTRA_BAZEL_FLAGS" ] && BAZEL_FLAGS+=($EXTRA_BAZEL_FLAGS)
 
-./tools/bazel --output_user_root="$KROOT/out/bazel-root" run \
+bash "$KLEAF_BAZEL" --output_user_root="$KROOT/out/bazel-root" run \
 	"${BAZEL_FLAGS[@]}" \
 	"//vendor/oneplus/kernel:${TARGET}_dist" -- --destdir="$DIST_DIR"
 
@@ -230,7 +301,7 @@ log "kernel release in Image: ${KRELEASE:-<unknown>}"
 	echo "target        : //vendor/oneplus/kernel:${TARGET}_dist"
 	echo "kleaf         : aosp kernel/build @ $KLEAF_REF"
 	echo "ACK common    : aosp kernel/common @ $COMMON_REF"
-	echo "prebuilts     : @ $PREBUILT_REF"
+	echo "prebuilts     : @ $PREBUILT_REF (clang $CLANG_VERSION, rust $RUST_VERSION)"
 	echo "modules repo  : $MODULES_REPO @ $MODULES_REF"
 	echo "devicetrees   : $DEVICETREES_REPO @ $DEVICETREES_REF"
 	echo "kernel release: ${KRELEASE:-<unknown>}"

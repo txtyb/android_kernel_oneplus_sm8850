@@ -164,14 +164,13 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Publish build log to the ci-logs branch
-        if: failure()
+      - name: Publish build status/log to the ci-logs branch
+        if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          JOB_STATUS: ${{ job.status }}
         run: |
           set +e
-          LOG="$GITHUB_WORKSPACE/build-full.log"
-          [ -f "$LOG" ] || { echo "no build log found"; exit 0; }
           NAME="$(echo "$GITHUB_WORKFLOW" | tr -c 'A-Za-z0-9._-' '_')"
           WORK=$(mktemp -d); cd "$WORK"
           git init -q .
@@ -179,11 +178,24 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           { git fetch -q --depth=1 origin ci-logs && git checkout -q -B ci-logs FETCH_HEAD; } || git checkout -q -B ci-logs
-          mkdir -p logs
-          tail -n 5000 "$LOG" > "logs/${NAME}-last.log"
+          mkdir -p logs status
+          {
+            echo "workflow : ${GITHUB_WORKFLOW}"
+            echo "run      : #${GITHUB_RUN_NUMBER} (${GITHUB_RUN_ID})"
+            echo "status   : ${JOB_STATUS}"
+            echo "commit   : ${GITHUB_SHA}"
+            echo "url      : ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo
+            for f in "$GITHUB_WORKSPACE/kernel-platform/build-info.txt" "$GITHUB_WORKSPACE/kernel-workspace/build-info.txt"; do
+              [ -f "$f" ] && { echo "--- ${f##*/} ---"; cat "$f"; }
+            done
+          } > "status/${NAME}.txt"
+          for f in "$GITHUB_WORKSPACE/build-full.log" "$GITHUB_WORKSPACE/build.log"; do
+            if [ -f "$f" ]; then tail -n 5000 "$f" > "logs/${NAME}-last.log"; break; fi
+          done
           git add -A
-          git commit -q -m "ci: ${NAME} run #${GITHUB_RUN_NUMBER} failed (${GITHUB_SHA:0:7})"
-          git push -q origin ci-logs && echo "log published to the ci-logs branch"
+          git commit -q -m "ci: ${NAME} run #${GITHUB_RUN_NUMBER} ${JOB_STATUS} (${GITHUB_SHA:0:7})"
+          git push -q origin ci-logs && echo "published to the ci-logs branch"
 
       - name: Free disk space report
         if: always()
