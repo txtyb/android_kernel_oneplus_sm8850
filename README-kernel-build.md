@@ -1,42 +1,33 @@
 # OnePlus 15 (SM8850 / canoe / infiniti) OSS 内核编译
 
-用 GitHub Actions 从 **OnePlus OSS 官方源码**编译 OnePlus 15（SM8850 "canoe"，机型代号 `infiniti`）内核。
+用 GitHub Actions 从**你们组织（OnePlus-SM8850-Development）的内核源码**编译 OnePlus 15
+（SM8850 "canoe"，机型代号 `infiniti`）完整内核：
 
-**两条流水线，按你的 ROM 属于哪个内核家族来选**（这一点非常关键，选错内核无法开机）：
+- 工作流：[`.github/workflows/build-full-kernel.yml`](.github/workflows/build-full-kernel.yml)
+- 构建脚本：[`ci/build-kernel-platform.sh`](ci/build-kernel-platform.sh)
 
-| 工作流 | 源码 | 内核版本 / KMI | 产物 | 用在 |
-| --- | --- | --- | --- | --- |
-| [`build-gki-kernel.yml`](.github/workflows/build-gki-kernel.yml) | **OnePlusOSS** `android_kernel_common_oneplus_sm8850` @ `oneplus/sm8850_b_16.0.0_oneplus_15` + AOSP 工具链 | **6.12.23 / KMI 5** | GKI `Image` + AnyKernel3 刷机包 | **你的 PixelOS 17 CLO**（实测其预编译内核是 `6.12.23-android16-5-gb2a876903b49-ab14541642-4k`，KMI 5）——只换 `boot`，ROM 的模块继续用 |
-| [`build-full-kernel.yml`](.github/workflows/build-full-kernel.yml) | 本仓库（OnePlus-SM8850-Development `lineage-24.0`）+ AOSP `kernel/common@android16-6.12-2026-06` | 6.12.81 / KMI 6 | Image、boot.img、dtb/dtb.img、dtbo.img、vendor_dlkm/system_dlkm、模块集 | 用**本仓库源码**整编 ROM（`USE_PREBUILT_KERNEL=false`），或做完整替换 |
+源码来源（全部公开、无第三方 fork）：
 
-> 依据：你们组织自己的预编译内核仓库 `android_device_oneplus_infiniti-kernel@lineage-24.0` 里
-> `images/kernel` 的版本串是 `Linux version 6.12.23-android16-5-gb2a876903b49-ab14541642-4k`，
-> 即 **6.12.23 / KMI generation 5**。而本仓库 `lineage-24.0` 的 `android/ACK_SHA` 是
-> `android16-6.12-2026-06_r3`（KMI generation 6，编出来是 `6.12.81-android16-6-4k`）。
-> 厂商模块的 `vermagic` 与 KMI 代次必须一致，二者不能互相顶替。
+| 角色 | 来源 |
+| --- | --- |
+| SoC 仓库（**就是本仓库 / 你 fork 的那个**） | `OnePlus-SM8850-Development/android_kernel_oneplus_sm8850@lineage-24.0` |
+| 厂商模块 / 设备树 | `android_kernel_oneplus_sm8850-modules`、`-devicetrees` @ `lineage-24.0` |
+| kleaf 构建系统 | `OnePlus-SM8850-Development/kernel_build@main-kernel-2025`（AOSP `kernel/build` 的镜像） |
+| GKI 内核主体（ACK，本组织不提供） | AOSP `kernel/common@android16-6.12-2026-06`（与本仓库 `android/ACK_SHA` 的 `_r3` 对应） |
+| 工具链 / 依赖 | AOSP 官方 `prebuilts/*`、`external/*` |
 
-> 说明：仓库里早期那条"GKI 快线"依赖第三方（cctv18）fork 的源码与重打包工具链，已按你的要求删除；
-> 现在所有源码只来自 **OnePlusOSS / OnePlus-SM8850-Development 组织 + AOSP 官方**。
+> 关于内核家族：你们 `android_device_oneplus_infiniti-kernel@lineage-24.0` 里那份预编译 `images/kernel`
+> 的版本串是 `6.12.23-android16-5-gb2a876903b49-ab14541642-4k`（KMI generation **5**）。
+> 其中 `b2a876903b49` 经查是 **OnePlusOSS/android_kernel_common_oneplus_sm8850** 的提交
+> （2025-12-02 "ANDROID: Update symbols to oplus symbol list."），即那份预编译内核是官方
+> OnePlusOSS 6.12.23 树编出来的（KMI 5），不是用本组织源码编的。
+> 而本流水线用本组织 `lineage-24.0` + AOSP ACK `2026-06`，产出 **6.12.81 / KMI generation 6**
+> （构建日志里实测 `6.12.81-android16-6-4k`）。厂商模块的 `vermagic` 与 KMI 代次写死在模块里，
+> **两代内核不能互相顶替**：本流水线的产物要配合同一批编出来的模块（`out/dist` 里有），
+> 或者直接用 `USE_PREBUILT_KERNEL=false` 让 ROM 从源码编内核。
 
-- GKI 流水线脚本：[`ci/build-gki-kernel.sh`](ci/build-gki-kernel.sh)（+ [`ci/anykernel.sh`](ci/anykernel.sh)）
-- 全量流水线脚本：[`ci/build-kernel-platform.sh`](ci/build-kernel-platform.sh)
-
----
-
-## 0. GKI 流水线（6.12.23 / KMI 5，对应你的 ROM）
-
-Sources 全部官方：内核源码 `OnePlusOSS/android_kernel_common_oneplus_sm8850@oneplus/sm8850_b_16.0.0_oneplus_15`，
-工具链 AOSP `platform/prebuilts/{clang/host/linux-x86,clang-tools,kernel-build-tools,rust}`，
-刷机包模板 `osm0sis/AnyKernel3` + 本仓库的 `ci/anykernel.sh`（机型校验 `infiniti`/`OP5D1`/`CPH274x`/`PLK110`，
-`BLOCK=boot`、`split_boot`+`flash_boot`，不动 `init_boot` 的 ramdisk）。
-
-关键点：脚本会把 `CONFIG_LOCALVERSION` 强制设为 `-$KERNEL_SUFFIX`（默认
-`android16-5-gb2a876903b49-ab14541642-4k`，即你 ROM 的发行串），并关掉 `LOCALVERSION_AUTO`、
-屏蔽 `setlocalversion` 的 SCM 后缀，这样新内核的 `vermagic` 与 ROM 厂商模块**逐字一致**，
-可以直接只刷 `boot`。跑完日志里会打印实际发行串，若与预期不符会有 `!!!` 警告。
-
-GitHub → Actions → **Build GKI kernel (OnePlus 15 OSS 6.12.23 / KMI 5)** → *Run workflow*；
-产物 `OnePlus15-gki-6.12.23`（含 `OSS-OnePlus15-KMI5-gki-<发行串>.zip`、`Image`、`build-info.txt`、`.config`）。
+> 历史说明：仓库里先后出现过两条基于第三方源码的流水线（cctv18 fork、OnePlusOSS 官方树），
+> 均已按你的要求删除；现在只保留上面这一条。
 
 ---
 
