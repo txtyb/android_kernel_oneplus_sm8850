@@ -167,15 +167,21 @@ if [ "$SKIP_SYNC" != "1" ]; then
 	disk
 
 	log "fetching prebuilts"
+	# The clang prebuilt repository is huge (every clang version ever shipped),
+	# so only check out the toolchain we use plus the kleaf toolchain rules
+	# (prebuilts/clang/host/linux-x86/kleaf/**) that kleaf's module extension
+	# loads - a missing 'kleaf' directory aborts bazel with "Every .bzl file
+	# must have a corresponding package".
 	fetch_bg clone_sparse "$AOSP/platform/prebuilts/clang/host/linux-x86" \
-		prebuilts/clang/host/linux-x86 "$PREBUILT_REF" "$CLANG_VERSION"
+		prebuilts/clang/host/linux-x86 "$PREBUILT_REF" \
+		"$CLANG_VERSION" kleaf llvm-binutils-stable
 	fetch_bg clone_full "$AOSP/platform/prebuilts/build-tools" prebuilts/build-tools "$PREBUILT_REF"
 	fetch_bg clone_sparse "$AOSP/platform/prebuilts/clang-tools" prebuilts/clang-tools "$PREBUILT_REF" linux-x86
 	fetch_bg clone_full "$AOSP/kernel/prebuilts/build-tools" prebuilts/kernel-build-tools "$PREBUILT_REF"
 	fetch_bg clone_rust "$AOSP/platform/prebuilts/rust" prebuilts/rust "$PREBUILT_REF" "$RUST_VERSION"
 	fetch_bg clone_full "$AOSP/platform/prebuilts/jdk/jdk11" prebuilts/jdk/jdk11 "$PREBUILT_REF"
-	fetch_bg clone_sparse "$AOSP/platform/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8" \
-		prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8 "$PREBUILT_REF" sysroot
+	fetch_bg clone_full "$AOSP/platform/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8" \
+		prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8 "$PREBUILT_REF"
 	fetch_bg clone_full "$AOSP/toolchain/prebuilts/ndk/r26" prebuilts/ndk-r26 "$NDK_REF"
 	fetch_wait
 	disk
@@ -245,6 +251,7 @@ for p in \
 	prebuilts/build-tools/linux_musl-x86/bin/py3-cmd \
 	prebuilts/kernel-build-tools/bazel/linux-x86_64/bazel \
 	prebuilts/clang/host/linux-x86/"$CLANG_VERSION"/bin/clang \
+	prebuilts/clang/host/linux-x86/kleaf/clang_toolchain_repository.bzl \
 	prebuilts/jdk/jdk11 \
 	bootable/libbootloader/gbl \
 	tools/mkbootimg/mkbootimg.py; do
