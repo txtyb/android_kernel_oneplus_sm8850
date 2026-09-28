@@ -1,0 +1,6 @@
+workflow : Build full OSS kernel (SM8850 kernel_platform)
+run      : #3 (36376531112)
+status   : cancelled
+commit   : 374d69e7e13824c0db6933c7fb585903574d3748
+url      : https://github.com/txtyb/android_kernel_oneplus_sm8850/actions/runs/36376531112
+
