@@ -1,6 +1,6 @@
 workflow : Build full OSS kernel (SM8850 kernel_platform)
-run      : #6 (36377458461)
+run      : #7 (36378279841)
 status   : failure
-commit   : 4509dc905d44f7e6917e13f80ed011c0dad784e9
-url      : https://github.com/txtyb/android_kernel_oneplus_sm8850/actions/runs/36377458461
+commit   : ecd723d9737b2c9626b0ccde71fd25123853efa9
+url      : https://github.com/txtyb/android_kernel_oneplus_sm8850/actions/runs/36378279841
 
