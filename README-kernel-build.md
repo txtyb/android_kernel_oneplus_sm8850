@@ -1,18 +1,46 @@
 # OnePlus 15 (SM8850 / canoe / infiniti) OSS 内核编译
 
-用 GitHub Actions 从 **OnePlus OSS 源码**编译 OnePlus 15（SM8850 "canoe"，机型代号 `infiniti`）的
-**完整内核**，产物就是 ROM 里那份"预编译内核"（`device/oneplus/infiniti-kernel`）的来源。
+用 GitHub Actions 从 **OnePlus OSS 官方源码**编译 OnePlus 15（SM8850 "canoe"，机型代号 `infiniti`）内核。
 
-- 工作流：[`.github/workflows/build-full-kernel.yml`](.github/workflows/build-full-kernel.yml)
-- 构建脚本：[`ci/build-kernel-platform.sh`](ci/build-kernel-platform.sh)
+**两条流水线，按你的 ROM 属于哪个内核家族来选**（这一点非常关键，选错内核无法开机）：
 
-> 说明：仓库里曾经有过一条"只编 GKI Image + AnyKernel3"的快线，它依赖第三方（cctv18）fork 的
-> OPLUS 源码树和其重打包的工具链，已按你的要求**删除**。现在只保留完全基于
-> **OnePlus-SM8850-Development 组织仓库 + AOSP 官方源码**的一条流水线。
+| 工作流 | 源码 | 内核版本 / KMI | 产物 | 用在 |
+| --- | --- | --- | --- | --- |
+| [`build-gki-kernel.yml`](.github/workflows/build-gki-kernel.yml) | **OnePlusOSS** `android_kernel_common_oneplus_sm8850` @ `oneplus/sm8850_b_16.0.0_oneplus_15` + AOSP 工具链 | **6.12.23 / KMI 5** | GKI `Image` + AnyKernel3 刷机包 | **你的 PixelOS 17 CLO**（实测其预编译内核是 `6.12.23-android16-5-gb2a876903b49-ab14541642-4k`，KMI 5）——只换 `boot`，ROM 的模块继续用 |
+| [`build-full-kernel.yml`](.github/workflows/build-full-kernel.yml) | 本仓库（OnePlus-SM8850-Development `lineage-24.0`）+ AOSP `kernel/common@android16-6.12-2026-06` | 6.12.81 / KMI 6 | Image、boot.img、dtb/dtb.img、dtbo.img、vendor_dlkm/system_dlkm、模块集 | 用**本仓库源码**整编 ROM（`USE_PREBUILT_KERNEL=false`），或做完整替换 |
+
+> 依据：你们组织自己的预编译内核仓库 `android_device_oneplus_infiniti-kernel@lineage-24.0` 里
+> `images/kernel` 的版本串是 `Linux version 6.12.23-android16-5-gb2a876903b49-ab14541642-4k`，
+> 即 **6.12.23 / KMI generation 5**。而本仓库 `lineage-24.0` 的 `android/ACK_SHA` 是
+> `android16-6.12-2026-06_r3`（KMI generation 6，编出来是 `6.12.81-android16-6-4k`）。
+> 厂商模块的 `vermagic` 与 KMI 代次必须一致，二者不能互相顶替。
+
+> 说明：仓库里早期那条"GKI 快线"依赖第三方（cctv18）fork 的源码与重打包工具链，已按你的要求删除；
+> 现在所有源码只来自 **OnePlusOSS / OnePlus-SM8850-Development 组织 + AOSP 官方**。
+
+- GKI 流水线脚本：[`ci/build-gki-kernel.sh`](ci/build-gki-kernel.sh)（+ [`ci/anykernel.sh`](ci/anykernel.sh)）
+- 全量流水线脚本：[`ci/build-kernel-platform.sh`](ci/build-kernel-platform.sh)
 
 ---
 
-## 1. 为什么必须"全量"编译
+## 0. GKI 流水线（6.12.23 / KMI 5，对应你的 ROM）
+
+Sources 全部官方：内核源码 `OnePlusOSS/android_kernel_common_oneplus_sm8850@oneplus/sm8850_b_16.0.0_oneplus_15`，
+工具链 AOSP `platform/prebuilts/{clang/host/linux-x86,clang-tools,kernel-build-tools,rust}`，
+刷机包模板 `osm0sis/AnyKernel3` + 本仓库的 `ci/anykernel.sh`（机型校验 `infiniti`/`OP5D1`/`CPH274x`/`PLK110`，
+`BLOCK=boot`、`split_boot`+`flash_boot`，不动 `init_boot` 的 ramdisk）。
+
+关键点：脚本会把 `CONFIG_LOCALVERSION` 强制设为 `-$KERNEL_SUFFIX`（默认
+`android16-5-gb2a876903b49-ab14541642-4k`，即你 ROM 的发行串），并关掉 `LOCALVERSION_AUTO`、
+屏蔽 `setlocalversion` 的 SCM 后缀，这样新内核的 `vermagic` 与 ROM 厂商模块**逐字一致**，
+可以直接只刷 `boot`。跑完日志里会打印实际发行串，若与预期不符会有 `!!!` 警告。
+
+GitHub → Actions → **Build GKI kernel (OnePlus 15 OSS 6.12.23 / KMI 5)** → *Run workflow*；
+产物 `OnePlus15-gki-6.12.23`（含 `OSS-OnePlus15-KMI5-gki-<发行串>.zip`、`Image`、`build-info.txt`、`.config`）。
+
+---
+
+## 1. 为什么全量编译必须组装 kernel_platform
 
 本仓库 `android_kernel_oneplus_sm8850` 是 Qualcomm `kernel_platform` 的 **SoC 侧仓库**，自己
 不能独立编译。它自己的 `soc_repo_path.bzl` 写明了它在平台里的位置：
@@ -93,11 +121,36 @@ GitHub → Actions → **Build full OSS kernel (SM8850 kernel_platform)** → *R
 
 ## 6. 产物怎么用
 
-1. **替换 ROM 的预编译内核（推荐，与你说的用途一致）**
-   把 `out/dist/` 里的 `Image`（对应 `images/kernel`）、`dtb.img`、`dtbo.img` 以及
-   `modules/{system_dlkm,vendor_dlkm,vendor_ramdisk}` 覆盖到 ROM 的
-   `device/oneplus/infiniti-kernel/`，再整编 ROM。
-2. **只想换内核（boot-only）**
+官方设备树（`android_device_oneplus_sm8850-common@lineage-24.0/BoardConfigCommon.mk`）里的设置就是本流水线的目标：
+
+```
+TARGET_KERNEL_PLATFORM_TARGET := canoe_perf
+TARGET_KERNEL_SOURCE        := vendor/oneplus/kernel
+TARGET_KERNEL_VERSION       := 6.12
+TARGET_KERNEL_UNSAFE_DDK_HEADERS := true
+BOARD_KERNEL_IMAGE_NAME     := Image
+BOARD_USES_GENERIC_KERNEL_IMAGE := true
+BOARD_INCLUDE_DTB_IN_BOOTIMG := true
+BOARD_KERNEL_SEPARATED_DTBO := true
+BOARD_INIT_BOOT_HEADER_VERSION := 4
+```
+
+而 `android_device_oneplus_infiniti@lineage-24.0/BoardConfig.mk` 里是：
+
+```
+USE_PREBUILT_KERNEL ?= true      # 默认用 device/oneplus/infiniti-kernel 里的预编译内核
+```
+
+1. **让 ROM 直接用源码编内核（最贴近"替换预编译内核"）**
+   - 用本仓库的 `ci/build-kernel-platform.sh` 组装 `kernel/platform/kernel-6.12`（`common`、`build/kernel`、
+     `prebuilts`、`vendor/oneplus/{kernel,sm8850-modules,sm8850-devicetrees}` …）
+   - 在该 tree 里执行 `tools/bazel run … //vendor/oneplus/kernel:canoe_perf_dist`
+   - ROM 侧把 `USE_PREBUILT_KERNEL` 设为 `false`，`m kernel` / `brunch infiniti` 即会用源码编出的
+     `Image`、`dtb.img`、`dtbo.img` 和模块集，替换掉 `device/oneplus/infiniti-kernel` 的预编译产物
+2. **直接替换预编译产物**
+   把 `out/dist/` 里的 `Image`（对应 `images/kernel`）、`dtb.img`、`dtbo.img` 和
+   `modules/{system_dlkm,vendor_dlkm,vendor_ramdisk}` 覆盖到 `device/oneplus/infiniti-kernel/`，再整编 ROM。
+3. **只想换内核（boot-only）**
    ```bash
    adb shell getprop ro.boot.slot_suffix
    fastboot flash boot_a boot.img     # 或 boot_b
