@@ -1,0 +1,16 @@
+workflow : Build GKI kernel (OnePlus 15 OSS 6.12.23 / KMI 5)
+run      : #1 (36387182984)
+status   : success
+commit   : f6541f5ef298f58e73b30a71ea63bba708310339
+url      : https://github.com/txtyb/android_kernel_oneplus_sm8850/actions/runs/36387182984
+
+kernel source : OnePlusOSS/android_kernel_common_oneplus_sm8850 @ oneplus/sm8850_b_16.0.0_oneplus_15  (Linux 6.12.23)
+toolchain     : aosp main-kernel-2025 clang-r536225 + rust 1.82.0
+kernel release: 6.12.23-android16-5-gb2a876903b49-ab14541642-4k
+package       : OSS-OnePlus15-KMI5-gki-6.12.23-android16-5-gb2a876903b49-ab14541642-4k.zip
+flash with    : AnyKernel3 capable flasher (HorizonKernelFlasher / TWRP)
+
+--- Image ---
+57475fa131b53ab35ffa66e32c68c3404388f56b5dc2ddd80a3b02562ce054b5  common/out/arch/arm64/boot/Image
+--- package ---
+783563e4a117e2de960f0c47c4604c50f7a608825c241a0e8f16a464d65543c9  OSS-OnePlus15-KMI5-gki-6.12.23-android16-5-gb2a876903b49-ab14541642-4k.zip
