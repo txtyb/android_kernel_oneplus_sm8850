@@ -44,7 +44,15 @@ KROOT=${KROOT:-$PWD/kernel-platform}
 SOC_SRC=${SOC_SRC:-$PWD}
 # Revisions (LineageOS 24 / lineage-24.0).
 KLEAF_REF=${KLEAF_REF:-main-kernel-2025}
+# ACK tree and ref: any public mirror works, and the ref may be a branch, a tag
+# (e.g. android16-6.12-2025-06_r8 = Linux 6.12.23, KMI generation 5) or a commit.
+COMMON_URL=${COMMON_URL:-$AOSP/kernel/common}
 COMMON_REF=${COMMON_REF:-android16-6.12-2026-06}
+# Optional: build a historical state of the SoC repository (branch/tag/commit)
+# instead of the checkout of this workspace.  Used to reproduce the KMI 5 era
+# (soc commit 222aacee97 pins ACK android16-6.12-2025-06_r8).
+SOC_URL=${SOC_URL:-$GH/OnePlus-SM8850-Development/android_kernel_oneplus_sm8850}
+SOC_REF=${SOC_REF:-}
 PREBUILT_REF=${PREBUILT_REF:-main-kernel-2025}
 # GBL (bootable/libbootloader) lives on its own branch in aosp.
 GBL_REF=${GBL_REF:-gbl-android16}
@@ -105,6 +113,28 @@ clone_full() { # clone_full <url> <dir> [branch]
 	else
 		git_retry clone --depth=1 --no-tags "$url" "$dir" || die "clone failed: $url"
 	fi
+}
+
+clone_ref() { # clone_ref <url> <dir> <ref>   (branch, tag or commit)
+	local url=$1 dir=$2 ref=$3
+	[ -d "$dir/.git" ] && return 0
+	mkdir -p "$dir"
+	log "fetch $dir @ $ref"
+	if (
+		cd "$dir" || exit 1
+		git init -q .
+		git remote add origin "$url" || exit 1
+		local i
+		for i in 1 2 3; do
+			if git fetch -q --depth=1 origin "$ref" && git checkout -q FETCH_HEAD; then exit 0; fi
+			sleep 5
+		done
+		exit 1
+	); then
+		return 0
+	fi
+	rm -rf "$dir"
+	die "cannot fetch $ref from $url"
 }
 
 clone_sparse() { # clone_sparse <url> <dir> <branch> <path>...
@@ -168,8 +198,8 @@ disk
 # ---------------------------------------------------------------------------
 if [ "$SKIP_SYNC" != "1" ]; then
 	log "fetching ACK + kleaf"
-	fetch_bg clone_full "$AOSP/kernel/common" common "$COMMON_REF"
-	fetch_bg clone_full "$KLEAF_REPO" build/kernel "$KLEAF_REF"
+	fetch_bg clone_ref "$COMMON_URL" common "$COMMON_REF"
+	fetch_bg clone_ref "$KLEAF_REPO" build/kernel "$KLEAF_REF"
 	fetch_wait
 	disk
 
@@ -252,8 +282,8 @@ if [ "$SKIP_SYNC" != "1" ]; then
 	fi
 
 	log "fetching OnePlus vendor repositories"
-	fetch_bg clone_full "$GH/$MODULES_REPO" vendor/oneplus/sm8850-modules "$MODULES_REF"
-	fetch_bg clone_full "$GH/$DEVICETREES_REPO" vendor/oneplus/sm8850-devicetrees "$DEVICETREES_REF"
+	fetch_bg clone_ref "$GH/$MODULES_REPO" vendor/oneplus/sm8850-modules "$MODULES_REF"
+	fetch_bg clone_ref "$GH/$DEVICETREES_REPO" vendor/oneplus/sm8850-devicetrees "$DEVICETREES_REF"
 	fetch_wait
 	disk
 fi
@@ -272,6 +302,16 @@ fi
 [ -f common/Makefile ] || die "common/ (ACK) is missing"
 [ -d vendor/oneplus/sm8850-modules ] || die "vendor/oneplus/sm8850-modules is missing"
 [ -d vendor/oneplus/sm8850-devicetrees ] || die "vendor/oneplus/sm8850-devicetrees is missing"
+echo "  common kernel version: $(sed -n 's/^VERSION = //p' common/Makefile).$(sed -n 's/^PATCHLEVEL = //p' common/Makefile).$(sed -n 's/^SUBLEVEL = //p' common/Makefile)"
+if [ -f common/build.config.constants ]; then
+	echo "  common build.config.constants: $(tr '\n' ' ' <common/build.config.constants)"
+fi
+if [ -f vendor/oneplus/kernel/soc_repo_path.bzl ]; then
+	echo "  soc_repo_path.bzl: $(tr '\n' ' ' <vendor/oneplus/kernel/soc_repo_path.bzl)"
+fi
+if [ -f vendor/oneplus/kernel/android/ACK_SHA ]; then
+	echo "  soc repo ACK_SHA: $(tr '\n' ' ' <vendor/oneplus/kernel/android/ACK_SHA)"
+fi
 
 for p in \
 	build/kernel/kleaf/bazel.sh \
@@ -292,14 +332,20 @@ ls -la build/kernel | head -n 12 || true
 # 2. install this repository as vendor/oneplus/kernel
 # ---------------------------------------------------------------------------
 log "installing SoC repo into vendor/oneplus/kernel"
-mkdir -p vendor/oneplus/kernel
-rsync -a --delete \
-	--exclude '.git/' \
-	--exclude '.github/' \
-	--exclude 'ci/' \
-	--exclude 'kernel-platform/' \
-	--exclude 'kernel-workspace/' \
-	"$SOC_SRC/" vendor/oneplus/kernel/
+if [ -n "$SOC_REF" ]; then
+	# historical state of the SoC repository (KMI 5 era experiments)
+	rm -rf vendor/oneplus/kernel
+	clone_ref "$SOC_URL" vendor/oneplus/kernel "$SOC_REF"
+else
+	mkdir -p vendor/oneplus/kernel
+	rsync -a --delete \
+		--exclude '.git/' \
+		--exclude '.github/' \
+		--exclude 'ci/' \
+		--exclude 'kernel-platform/' \
+		--exclude 'kernel-workspace/' \
+		"$SOC_SRC/" vendor/oneplus/kernel/
+fi
 
 # ---------------------------------------------------------------------------
 # 3. workspace glue (what the repo manifests express as <linkfile>)

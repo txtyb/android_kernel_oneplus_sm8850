@@ -26,6 +26,7 @@ on:
     paths:
       - '.github/workflows/build-full-kernel.yml'
       - 'ci/build-kernel-platform.sh'
+      - 'ci/build-config.env'
   workflow_dispatch:
     inputs:
       target:
@@ -36,23 +37,33 @@ on:
         options:
           - canoe_perf
           - canoe_consolidate
+      common_url:
+        description: 'ACK kernel tree (clone URL); any public mirror works'
+        required: true
+        default: 'https://android.googlesource.com/kernel/common'
+        type: string
       common_ref:
-        description: 'ACK (aosp kernel/common) branch'
+        description: 'ACK ref: branch, tag or commit (e.g. android16-6.12-2025-06_r8 = 6.12.23 / KMI 5)'
         required: true
         default: 'android16-6.12-2026-06'
         type: string
+      soc_ref:
+        description: 'Optional: build a historical SoC repo ref (branch/tag/commit); empty = this checkout'
+        required: false
+        default: ''
+        type: string
       kleaf_ref:
-        description: 'aosp kernel/build (kleaf) branch'
+        description: 'kleaf (kernel/build mirror) ref'
         required: true
         default: 'main-kernel-2025'
         type: string
       modules_ref:
-        description: 'android_kernel_oneplus_sm8850-modules branch'
+        description: 'sm8850-modules ref (branch/tag/commit)'
         required: true
         default: 'lineage-24.0'
         type: string
       devicetrees_ref:
-        description: 'android_kernel_oneplus_sm8850-devicetrees branch'
+        description: 'sm8850-devicetrees ref (branch/tag/commit)'
         required: true
         default: 'lineage-24.0'
         type: string
@@ -82,26 +93,39 @@ jobs:
       - name: Resolve configuration
         env:
           IN_TARGET: ${{ github.event.inputs.target }}
+          IN_COMMON_URL: ${{ github.event.inputs.common_url }}
           IN_COMMON: ${{ github.event.inputs.common_ref }}
+          IN_SOC_REF: ${{ github.event.inputs.soc_ref }}
           IN_KLEAF: ${{ github.event.inputs.kleaf_ref }}
           IN_MODULES: ${{ github.event.inputs.modules_ref }}
           IN_DT: ${{ github.event.inputs.devicetrees_ref }}
         run: |
-          echo "TARGET=${IN_TARGET:-canoe_perf}" >> "$GITHUB_ENV"
-          echo "COMMON_REF=${IN_COMMON:-android16-6.12-2026-06}" >> "$GITHUB_ENV"
-          echo "KLEAF_REF=${IN_KLEAF:-main-kernel-2025}" >> "$GITHUB_ENV"
-          echo "MODULES_REF=${IN_MODULES:-lineage-24.0}" >> "$GITHUB_ENV"
-          echo "DEVICETREES_REF=${IN_DT:-lineage-24.0}" >> "$GITHUB_ENV"
+          # ci/build-config.env holds the defaults; workflow inputs override them.
+          set -a
+          [ -f ci/build-config.env ] && . ./ci/build-config.env
+          set +a
+          TARGET="${IN_TARGET:-${TARGET:-canoe_perf}}"
+          COMMON_URL="${IN_COMMON_URL:-${COMMON_URL:-https://android.googlesource.com/kernel/common}}"
+          COMMON_REF="${IN_COMMON:-${COMMON_REF:-android16-6.12-2026-06}}"
+          SOC_REF="${IN_SOC_REF:-${SOC_REF:-}}"
+          KLEAF_REF="${IN_KLEAF:-${KLEAF_REF:-main-kernel-2025}}"
+          MODULES_REF="${IN_MODULES:-${MODULES_REF:-lineage-24.0}}"
+          DEVICETREES_REF="${IN_DT:-${DEVICETREES_REF:-lineage-24.0}}"
+          for kv in TARGET COMMON_URL COMMON_REF SOC_REF KLEAF_REF MODULES_REF DEVICETREES_REF; do
+            printf '%s=%s\n' "$kv" "${!kv}" >> "$GITHUB_ENV"
+          done
           {
             echo "### kernel platform build configuration"
             echo
             echo "| item | value |"
             echo "| --- | --- |"
-            echo "| target | \`${IN_TARGET:-canoe_perf}\` |"
-            echo "| ACK common | \`${IN_COMMON:-android16-6.12-2026-06}\` |"
-            echo "| kleaf | \`${IN_KLEAF:-main-kernel-2025}\` |"
-            echo "| modules | \`${IN_MODULES:-lineage-24.0}\` |"
-            echo "| devicetrees | \`${IN_DT:-lineage-24.0}\` |"
+            echo "| target | \`$TARGET\` |"
+            echo "| ACK tree | \`$COMMON_URL\` |"
+            echo "| ACK ref | \`$COMMON_REF\` |"
+            echo "| SoC ref | \`${SOC_REF:-<this checkout>}\` |"
+            echo "| kleaf | \`$KLEAF_REF\` |"
+            echo "| modules | \`$MODULES_REF\` |"
+            echo "| devicetrees | \`$DEVICETREES_REF\` |"
             echo "| soc repo | \`${GITHUB_REPOSITORY}@${GITHUB_REF_NAME}\` (${GITHUB_SHA:0:12}) |"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -130,7 +154,9 @@ jobs:
           KROOT="$GITHUB_WORKSPACE/kernel-platform" \
           SOC_SRC="$GITHUB_WORKSPACE" \
           TARGET="$TARGET" \
+          COMMON_URL="$COMMON_URL" \
           COMMON_REF="$COMMON_REF" \
+          SOC_REF="$SOC_REF" \
           KLEAF_REF="$KLEAF_REF" \
           MODULES_REF="$MODULES_REF" \
           DEVICETREES_REF="$DEVICETREES_REF" \
