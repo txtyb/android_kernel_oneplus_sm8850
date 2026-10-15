@@ -1,0 +1,193 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Build the flashable deliverables:
+#
+#   1. an AnyKernel3 zip that swaps only the kernel inside the ROM's boot.img,
+#      and
+#   2. an init_boot.img, when one can be derived soundly.
+#
+# --- Why the AnyKernel3 boot section looks the way it does ---------------------
+# This device has a separate init_boot partition (BOARD_INIT_BOOT_HEADER_VERSION
+# := 4 in device/oneplus/sm8850-common/BoardConfigCommon.mk), so boot.img holds
+# the kernel and init_boot.img holds the generic ramdisk. AnyKernel3's own
+# template documents exactly this case:
+#
+#   dump_boot;  # use split_boot to skip ramdisk unpack, e.g. for devices with
+#               # init_boot ramdisk
+#   write_boot; # use flash_boot to skip ramdisk repack
+#
+# so we use split_boot/flash_boot: the kernel is replaced, the ramdisk is not
+# touched, and whatever the ROM put in boot.img stays put.
+#
+# AnyKernel3 ships 32-bit ARM magiskboot/busybox builds. That is fine here: GKI
+# has CONFIG_COMPAT=y (verified in arch/arm64/configs/gki_defconfig), so the
+# arm64 kernel runs them.
+#
+# --- About init_boot.img ------------------------------------------------------
+# kleaf's kernel_images cannot produce one: its boot_image_outs are only
+# boot.img / vendor_boot.img / vendor_kernel_boot.img and there is no
+# build_init_boot attribute. The ROM builds init_boot.img from the GKI generic
+# ramdisk and it contains no kernel, so a kernel rebuild does not change it.
+# We therefore DERIVE one from the GKI boot image in the dist when we can, say
+# loudly which file we used, and skip it otherwise. Keeping the ROM's own
+# init_boot.img is the safe choice.
+
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+require_dir "$DIST"
+require_file "$DIST/Image"
+
+# Pinned so the template we patch is the template we inspected.
+AK3_REPO="${AK3_REPO:-https://github.com/osm0sis/AnyKernel3}"
+AK3_REF="${AK3_REF:-020dfeccf9d7e962a48400fc94d3e451df92eead}"
+
+AK3_DIR="$OUT/anykernel3"
+STAMP="$(date -u +%Y%m%d)"
+AK3_ZIP="$RELEASE/op15-infiniti-anykernel3-${TARGET}-${STAMP}.zip"
+
+rm -rf "$AK3_DIR"
+mkdir -p "$RELEASE"
+
+# --------------------------------------------------------------------------
+# 1. AnyKernel3 zip
+# --------------------------------------------------------------------------
+log "Fetching AnyKernel3 @ ${AK3_REF:0:12}"
+git clone -q "$AK3_REPO" "$AK3_DIR"
+git -C "$AK3_DIR" checkout -q "$AK3_REF"
+rm -rf "$AK3_DIR/.git" "$AK3_DIR/.github"
+
+require_file "$AK3_DIR/anykernel.sh"
+require_file "$AK3_DIR/tools/magiskboot"
+require_file "$AK3_DIR/tools/ak3-core.sh"
+
+log "Patching anykernel.sh"
+# set_prop <key> <value>: replace the whole "key=..." line inside properties().
+set_prop() {
+    local key="$1" value="$2" file="$AK3_DIR/anykernel.sh"
+    if ! grep -q "^${key}=" "$file"; then
+        die "anykernel.sh has no '${key}=' line -- AnyKernel3 template changed, refusing to ship a broken zip"
+    fi
+    sed -i "s|^${key}=.*|${key}=${value}|" "$file"
+    grep -q "^${key}=${value}$" "$file" || die "failed to set ${key}=${value}"
+    echo "  ${key}=${value}"
+}
+
+set_prop kernel.string "OnePlus 15 OSS kernel (canoe_${SOC_VARIANT}) with CONFIG_TMPFS_XATTR=y"
+set_prop do.devicecheck "1"
+set_prop do.modules "0"
+set_prop do.systemless "1"
+set_prop do.cleanup "1"
+set_prop do.cleanuponabort "0"
+# do_devicecheck() in META-INF/com/google/android/update-binary compares these
+# against ro.product.device, ro.build.product, ro.product.vendor.device and
+# ro.vendor.product.device -- i.e. against the *codename*, not the model number.
+# 'infiniti' is the LineageOS/PixelOS codename; OP60FFL1/OP611FL1 come from this
+# device tree's TARGET_OTA_ASSERT_DEVICE, so a ROM that reports the ODM name also
+# passes. A failed check only aborts the flash, so extra names are harmless.
+set_prop device.name1 "$DEVICE"
+set_prop device.name2 "OP60FFL1"
+set_prop device.name3 "OP611FL1"
+set_prop device.name4 "CPH2745"
+set_prop device.name5 "PLK110"
+
+# swap the boot section over to the "kernel only, ramdisk lives in init_boot" flow.
+# BLOCK must be set too: the template ships osm0sis' tuna example path
+# (/dev/block/platform/omap/...) which does not exist on this device. "boot" makes
+# AnyKernel3 resolve the partition by name, which is what modern AK3 expects.
+sed -i 's|^BLOCK=.*|BLOCK=boot;|' "$AK3_DIR/anykernel.sh"
+sed -i 's|^dump_boot;.*|split_boot; # kernel only: the ramdisk is in init_boot|' "$AK3_DIR/anykernel.sh"
+sed -i 's|^write_boot;.*|flash_boot; # do not repack a ramdisk we do not own|' "$AK3_DIR/anykernel.sh"
+grep -q '^BLOCK=boot;' "$AK3_DIR/anykernel.sh" || die "failed to set BLOCK=boot"
+grep -q '^split_boot;' "$AK3_DIR/anykernel.sh" || die "split_boot swap failed"
+grep -q '^flash_boot;' "$AK3_DIR/anykernel.sh" || die "flash_boot swap failed"
+sed -i 's|^IS_SLOT_DEVICE=.*|IS_SLOT_DEVICE=1;|' "$AK3_DIR/anykernel.sh"
+grep -q '^IS_SLOT_DEVICE=1;' "$AK3_DIR/anykernel.sh" || die "failed to set IS_SLOT_DEVICE=1"
+echo "  BLOCK=boot, IS_SLOT_DEVICE=1, split_boot/flash_boot"
+
+log "Installing the kernel image into the zip"
+# AnyKernel3 looks for an exact 'Image' at the zip root (tools/ak3-core.sh).
+cp -f "$DIST/Image" "$AK3_DIR/Image"
+ls -la "$AK3_DIR/Image"
+
+# AnyKernel3 refuses to run if the image it would flash is not there.
+if [ ! -s "$AK3_DIR/Image" ]; then
+    die "Image is empty"
+fi
+
+log "Writing $AK3_ZIP"
+( cd "$AK3_DIR" && zip -qr1 "$AK3_ZIP" . -x '.git/*' )
+
+log "Verifying the zip"
+for want in anykernel.sh Image tools/magiskboot tools/ak3-core.sh META-INF/com/google/android/update-binary; do
+    if ! unzip -l "$AK3_ZIP" | grep -q " ${want}$"; then
+        die "zip is missing ${want}"
+    fi
+    echo "  present: ${want}"
+done
+echo "  anykernel.sh inside the zip:"
+unzip -p "$AK3_ZIP" anykernel.sh | grep -E '^(kernel.string|do.devicecheck|device.name1|BLOCK=|IS_SLOT_DEVICE=|split_boot;|flash_boot;)' | sed 's/^/    /'
+
+# --------------------------------------------------------------------------
+# 2. init_boot.img (derived, optional)
+# --------------------------------------------------------------------------
+MKBOOTIMG_DIR="$KERNEL_PATH/tools/mkbootimg"
+INIT_BOOT="$RELEASE/init_boot.img"
+
+derive_init_boot() {
+    local unpack="$MKBOOTIMG_DIR/unpack_bootimg.py"
+    local mkboot="$MKBOOTIMG_DIR/mkbootimg.py"
+    [ -f "$unpack" ] && [ -f "$mkboot" ] || { warn "mkbootimg tools not in the platform; skipping"; return 1; }
+
+    # Only trust an explicitly GKI-named boot image. Deriving from some other
+    # boot.img would risk packaging the wrong ramdisk into a partition the user
+    # might flash.
+    local candidates=()
+    while IFS= read -r f; do candidates+=("$f"); done < <(
+        find "$DIST" -maxdepth 2 -type f -name '*.img' \
+            \( -iname '*gki*boot*' -o -iname '*gki*' \) 2>/dev/null | sort
+    )
+    if [ "${#candidates[@]}" -eq 0 ]; then
+        warn "no GKI boot image in the dist, so init_boot.img cannot be derived"
+        warn "that is expected to be harmless: init_boot.img holds only the generic"
+        warn "ramdisk, which this kernel rebuild does not change. Keep the ROM's one."
+        return 1
+    fi
+
+    local work="$OUT/init_boot_work" src
+    for src in "${candidates[@]}"; do
+        rm -rf "$work"; mkdir -p "$work"
+        if ! python3 "$unpack" --boot_img "$src" --out "$work" > "$work/unpack.log" 2>&1; then
+            warn "could not unpack $src (see $work/unpack.log)"
+            continue
+        fi
+        if [ ! -s "$work/ramdisk" ]; then
+            warn "$(basename "$src") has no ramdisk; not a GKI boot image"
+            continue
+        fi
+
+        log "Deriving init_boot.img from $(basename "$src")"
+        echo "  source ramdisk: $(stat -c%s "$work/ramdisk") bytes"
+        python3 "$mkboot" \
+            --header_version 4 \
+            --pagesize 4096 \
+            --ramdisk "$work/ramdisk" \
+            --output "$INIT_BOOT"
+        echo "  init_boot.img  : $(stat -c%s "$INIT_BOOT") bytes"
+        warn "init_boot.img is DERIVED and normally unnecessary. Compare its size with"
+        warn "yours (adb shell 'ls -l /dev/block/by-name/init_boot') before flashing it."
+        return 0
+    done
+    return 1
+}
+
+if derive_init_boot; then
+    echo "$INIT_BOOT" > "$RELEASE/.has_init_boot"
+else
+    rm -f "$INIT_BOOT"
+    warn "shipping without init_boot.img"
+fi
+
+log "Flashable artifacts"
+ls -la "$RELEASE"

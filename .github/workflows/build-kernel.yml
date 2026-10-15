@@ -13,9 +13,12 @@ name: OnePlus 15 OSS kernel
 # plus CONFIG_TMPFS_XATTR=y from .ci/extra.config.
 #
 # A cold run downloads ~15 GB and then compiles for a while, so this workflow is
-# deliberately manual-only: trigger it from the Actions tab. Pass clo_repo /
-# clo_revision to build a fork or a different branch of the SoC kernel instead
-# of the LineageOS upstream the ROM ships.
+# manual-only by default: trigger it from the Actions tab. The one exception is
+# a push that touches .ci/trigger, which exists purely so the build can be
+# started from a script or a shell without a token.
+#
+# Pass clo_repo / clo_revision to build a fork or a different branch of the SoC
+# kernel instead of the LineageOS upstream the ROM ships.
 
 on:
   workflow_dispatch:
@@ -57,6 +60,11 @@ on:
         description: Extra flags appended verbatim to the bazel command line
         default: ""
         required: false
+  # Token-free trigger: touching .ci/trigger starts a run. Nothing else does.
+  push:
+    branches: [lineage-24.0]
+    paths:
+      - ".ci/trigger"
 
 permissions:
   contents: read
@@ -142,6 +150,12 @@ jobs:
 
       - name: Collect flashable artifacts
         run: bash .ci/50-package.sh
+
+      # AnyKernel3 zip (swaps the kernel inside the ROM's boot.img, leaving the
+      # ramdisk in init_boot alone) plus a derived init_boot.img when one can be
+      # built soundly.
+      - name: Build AnyKernel3 zip and init_boot.img
+        run: bash .ci/60-flashable.sh
 
       - name: Summarise artifacts
         if: always()

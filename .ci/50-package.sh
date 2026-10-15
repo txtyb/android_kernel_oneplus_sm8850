@@ -51,6 +51,9 @@ copy_if_present "$DIST/vendor_boot.img"           "flash"
 copy_if_present "$DIST/dtbo.img"                  "flash"
 copy_if_present "$DIST/vendor_dlkm.img"           "flash"
 copy_if_present "$DIST/system_dlkm*.img"          "flash"
+# A dist-provided init_boot.img if there ever is one; .ci/60-flashable.sh
+# derives one otherwise.
+copy_if_present "$DIST/init_boot*.img"            "flash"
 copy_if_present "$DIST/vendor_dlkm.modules.load"  "modules"
 copy_if_present "$DIST/system_dlkm.modules.load"  "modules"
 copy_if_present "$DIST/*.ko"                      "modules"
@@ -102,6 +105,14 @@ VERIFY THE KERNEL IS LIVE
 NOTES
   * kernel.config is the config read back out of Image, i.e. what the kernel
     actually booted with -- not just what a fragment asked for.
+  tree.
+  * .ci/60-flashable.sh also writes, next to this file:
+      op15-infiniti-anykernel3-<target>-<date>.zip   AnyKernel3 zip: swaps the
+        kernel inside your existing boot.img and leaves the ramdisk alone
+        (split_boot/flash_boot), for devices with a separate init_boot.
+      init_boot.img                                 DERIVED, optional, and
+        normally unnecessary -- see the warning that step prints. Prefer the
+        init_boot.img already on your device.
   * Our only functional config change is CONFIG_TMPFS_XATTR=y. It does not
     change the module ABI, so vendor_dlkm/system_dlkm normally need no update;
     the .ko files and both *.modules.load are included anyway.

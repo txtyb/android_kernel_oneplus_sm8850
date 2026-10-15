@@ -180,11 +180,50 @@ flash/boot.img               可直接 fastboot flash boot
 flash/vendor_boot.img        vendor ramdisk + DTB
 flash/dtbo.img               dtbo 分区
 flash/vendor_dlkm.img        模块分区
+flash/init_boot.img          派生出来的，可选，正常**不需要**刷（见下）
+op15-infiniti-anykernel3-*.zip  AnyKernel3 刷机包：只换 boot.img 里的内核
 modules/*.ko + *.modules.load
 config/kernel.config         从 Image 里读回来的真实配置
 FILES_IN_DIST.txt            dist 全部内容清单
 README-FLASH.txt             刷机/回滚/验证说明
 ```
+
+### 关于 `init_boot.img`（重要）
+
+**这个内核编译产不出也不该产 `init_boot.img`。** 两处证据：
+
+1. kleaf 的 `kernel_images` 只产出 `boot.img` / `vendor_boot.img` /
+   `vendor_kernel_boot.img`，属性里根本没有 `build_init_boot`
+   （`kernel/build` → `kleaf/impl/image/kernel_images.bzl`）。
+2. 本机型 `BoardConfigCommon.mk` 是 `BOARD_INIT_BOOT_HEADER_VERSION := 4` 且
+   `BOARD_USES_GENERIC_KERNEL_IMAGE := true` —— **内核在 `boot.img`**，
+   `init_boot.img` 里只有通用 ramdisk、不含内核。而我们的改动
+   （`CONFIG_TMPFS_XATTR`，内置选项）既不动 ramdisk 也不动任何模块。
+
+所以 `.ci/60-flashable.sh` 会**尽力从 dist 里的 GKI boot 镜像派生**一个
+`init_boot.img`（用 platform 自带的 `unpack_bootimg.py` 取出通用 ramdisk，再用
+`mkbootimg.py` 打成 header v4），并在日志里打印用的是哪个文件、两侧多大。
+派生不出来就明确警告并跳过 —— **不会拿一个来路不明的 ramdisk 冒充**。
+
+刷之前先跟设备上的比一下大小；**默认建议保留 ROM 原来的 init_boot**：
+
+```bash
+adb shell 'ls -l /dev/block/by-name/init_boot'
+```
+
+### 关于 AnyKernel3 刷机包
+
+* 用 `split_boot` + `flash_boot`（**不碰 ramdisk**）：本机型 ramdisk 在 `init_boot`，
+  这正是 AnyKernel3 模板注释里写给这类机型的用法。
+* `BLOCK=boot`、`IS_SLOT_DEVICE=1`、`do.modules=0`；设备校验列了 `infiniti` 与
+  `OP60FFL1`/`OP611FL1`（设备树 `TARGET_OTA_ASSERT_DEVICE` 里的 ODM 名），外加两个型号。
+  模板原本的 `BLOCK=/dev/block/platform/omap/...`（osm0sis 的 tuna 示例）**必须换掉**，
+  否则会往一个不存在的路径刷 —— 脚本会设置并断言它，改不动就报错退出。
+* AnyKernel3 自带的是 **32 位 ARM** 的 `magiskboot`/`busybox`（我读了 ELF 头确认
+  `machine=0x28`）。在 arm64 上能跑，因为 GKI 有 `CONFIG_COMPAT=y`（已在
+  `gki_defconfig` 核实）。
+* 设备上没有 TWRP 的话，这个 zip 需要能执行 AnyKernel 脚本的刷入器（Kernel Flasher
+  之类、或带 root 的刷写工具），**不能**用 AOSP recovery 直接 sideload。
 
 ### 本地也能跑
 
@@ -197,6 +236,22 @@ bash .ci/20-config.sh    # 注入 CONFIG_TMPFS_XATTR=y
 bash .ci/30-build.sh     # bazel 编译
 bash .ci/40-verify.sh    # 从 Image 校验配置
 bash .ci/50-package.sh   # 打包
+bash .ci/60-flashable.sh # AnyKernel3 刷机包 + 派生 init_boot.img
+```
+
+### 用脚本触发（不需要 token）
+
+工作流默认只允许手动触发，但有一个刻意的例外：**push 改动 `.ci/trigger` 会启动一次构建**。
+
+```bash
+date -u +%Y-%m-%dT%H:%M:%SZ > .ci/trigger
+git add .ci/trigger && git commit -m "ci: trigger build" && git push
+```
+
+之后不用登录也能跟进进度（公开仓库的 runs / jobs 接口不需要认证）：
+
+```bash
+curl -s "https://api.github.com/repos/<你>/android_kernel_oneplus_sm8850/actions/runs?per_page=1"
 ```
 
 ## 5. 刷机前请务必注意
