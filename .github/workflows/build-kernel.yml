@@ -148,13 +148,18 @@ jobs:
       - name: Verify CONFIG_TMPFS_XATTR=y
         run: bash .ci/40-verify.sh
 
+      # These three run even when the config check fails: a failed check is
+      # exactly when the dist/.config and the images need to be inspected, and
+      # without them there is nothing to inspect.
       - name: Collect flashable artifacts
+        if: always()
         run: bash .ci/50-package.sh
 
       # AnyKernel3 zip (swaps the kernel inside the ROM's boot.img, leaving the
       # ramdisk in init_boot alone) plus a derived init_boot.img when one can be
       # built soundly.
       - name: Build AnyKernel3 zip and init_boot.img
+        if: always()
         run: bash .ci/60-flashable.sh
 
       - name: Summarise artifacts
@@ -179,7 +184,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload artifacts
-        if: success()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: op15-oss-kernel-canoe_${{ env.SOC_VARIANT }}-${{ github.run_number }}
