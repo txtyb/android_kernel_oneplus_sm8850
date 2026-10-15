@@ -102,11 +102,13 @@ modules.order
 #
 # We don't want to ignore the following even if they are dot-files
 #
+!.ci
 !.clang-format
 !.cocciconfig
 !.editorconfig
 !.get_maintainer.ignore
 !.gitattributes
+!.github
 !.gitignore
 !.kunitconfig
 !.mailmap

@@ -1,0 +1,176 @@
+name: OnePlus 15 OSS kernel
+
+# Builds the open-source kernel the PixelOS 17 CLO build for the OnePlus 15
+# (infiniti, Qualcomm SM8850 "canoe") is based on:
+#
+#   GKI/ACK            kernel/common    @ android16-6.12-2026-06
+#   CLO/SoC            LineageOS/android_kernel_oneplus_sm8850
+#   techpack modules   LineageOS/android_kernel_oneplus_sm8850-modules
+#   techpack devicetrees LineageOS/android_kernel_oneplus_sm8850-devicetrees
+#
+# built with kleaf exactly the way LineageOS does it
+# (vendor/lineage/build/tasks/kernel.mk, TARGET_KERNEL_PLATFORM_TARGET:=canoe_perf),
+# plus CONFIG_TMPFS_XATTR=y from .ci/extra.config.
+#
+# A cold run downloads ~15 GB and then compiles for a while, so this workflow is
+# deliberately manual-only: trigger it from the Actions tab. Pass clo_repo /
+# clo_revision to build a fork or a different branch of the SoC kernel instead
+# of the LineageOS upstream the ROM ships.
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_branch:
+        description: LineageOS branch for the techpack modules + devicetrees repos
+        default: lineage-24.0
+        required: false
+      clo_repo:
+        description: 'CLO/SoC kernel repo as owner/name (point this at your fork)'
+        default: LineageOS/android_kernel_oneplus_sm8850
+        required: false
+      clo_revision:
+        description: Branch/tag/SHA of clo_repo to build
+        default: lineage-24.0
+        required: false
+      clo_remote_fetch:
+        description: Git host serving clo_repo
+        default: https://github.com
+        required: false
+      kernel_snippet:
+        description: LineageOS manifest snippet that pins GKI + kleaf
+        default: kernel-6.12.xml
+        required: false
+      gki_revision:
+        description: 'GKI/ACK revision: "auto" keeps whatever the snippet pins'
+        default: auto
+        required: false
+      soc_variant:
+        description: SoC variant (perf is what the ROM ships)
+        type: choice
+        options: [perf, consolidate]
+        default: perf
+      runner:
+        description: Runner label (choose a larger runner if you run out of disk)
+        default: ubuntu-latest
+        required: false
+      extra_bazel_flags:
+        description: Extra flags appended verbatim to the bazel command line
+        default: ""
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: op15-oss-kernel-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  KERNEL_BRANCH: ${{ inputs.kernel_branch || 'lineage-24.0' }}
+  CLO_REPO: ${{ inputs.clo_repo || 'LineageOS/android_kernel_oneplus_sm8850' }}
+  CLO_REVISION: ${{ inputs.clo_revision || 'lineage-24.0' }}
+  CLO_REMOTE_FETCH: ${{ inputs.clo_remote_fetch || 'https://github.com' }}
+  KERNEL_SNIPPET: ${{ inputs.kernel_snippet || 'kernel-6.12.xml' }}
+  GKI_REVISION: ${{ inputs.gki_revision || 'auto' }}
+  SOC_VARIANT: ${{ inputs.soc_variant || 'perf' }}
+  EXTRA_BAZEL_FLAGS: ${{ inputs.extra_bazel_flags || '' }}
+
+jobs:
+  build:
+    name: canoe_${{ inputs.soc_variant || 'perf' }}
+    # A cold run downloads ~15 GB (ACK + kleaf + clang/rust prebuilts + the three
+    # OnePlus repos) and then builds. Budget a few hours.
+    runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Report the configuration
+        run: |
+          {
+            echo "### Build configuration"
+            echo
+            echo "| setting | value |"
+            echo "| --- | --- |"
+            echo "| kernel repos branch | \`$KERNEL_BRANCH\` |"
+            echo "| CLO/SoC kernel | \`$CLO_REPO\` @ \`$CLO_REVISION\` |"
+            echo "| platform snippet | \`$KERNEL_SNIPPET\` |"
+            echo "| GKI/ACK revision | \`$GKI_REVISION\` |"
+            echo "| SoC variant | \`canoe_$SOC_VARIANT\` |"
+            echo "| bazel extra flags | \`${EXTRA_BAZEL_FLAGS:-none}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The hosted ubuntu runners have ~14 GB free, which is not enough for a
+      # kernel platform checkout plus a bazel output root. Drop the preinstalled
+      # SDKs we do not use. Deliberately kept: /usr/lib/jvm (Bazel wants a
+      # Java runtime on PATH unless kleaf points --server_javabase elsewhere).
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /usr/local/share/boost \
+            /opt/az \
+            "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}/CodeQL" || true
+          sudo apt-get clean
+          df -h /
+
+      - name: Install host tooling
+        run: bash .ci/00-deps.sh
+
+      # This is the slow step: a `repo` workspace holding GKI/ACK, kleaf and
+      # every kernel prebuilt, plus the three OnePlus repos.
+      - name: Sync kernel sources
+        run: bash .ci/10-sync.sh
+
+      # CONFIG_TMPFS_XATTR=y (and anything else in .ci/extra.config) is merged
+      # into the SoC tree's kleaf defconfig dict here.
+      - name: Apply kernel config
+        run: bash .ci/20-config.sh
+
+      - name: Build kernel
+        run: bash .ci/30-build.sh
+
+      # Reads the config back out of the built Image, so a fragment that never
+      # reached Kbuild fails the job instead of shipping quietly.
+      - name: Verify CONFIG_TMPFS_XATTR=y
+        run: bash .ci/40-verify.sh
+
+      - name: Collect flashable artifacts
+        run: bash .ci/50-package.sh
+
+      - name: Summarise artifacts
+        if: always()
+        run: |
+          {
+            echo "### Artifacts"
+            echo
+            if [ -d out/release ]; then
+              echo '```'
+              du -sh out/release/* 2>/dev/null || true
+              echo '```'
+            fi
+            if [ -d out/dist ]; then
+              echo "<details><summary>dist/ contents</summary>"
+              echo
+              echo '```'
+              ls -la out/dist || true
+              echo '```'
+              echo "</details>"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: op15-oss-kernel-canoe_${{ env.SOC_VARIANT }}-${{ github.run_number }}
+          path: out/release/
+          # Images are already compressed; recompressing wastes minutes.
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,234 @@
+# OnePlus 15（infiniti / SM8850 "canoe"）开源内核 — GitHub Actions 自动编译
+
+用 GitHub Actions 编译 **PixelOS 17 那个 CLO Beta 版本正在用的开源内核**，并加上
+`CONFIG_TMPFS_XATTR=y`。
+
+对应 XDA 帖子里楼主最新那层楼：
+
+> Switches to an open-source kernel, with audio and display components now built from source.
+> Kernel sources: **GKI** · **CLO** · **Techpack modules** · **Techpack devicetrees**
+
+本仓库把这四个源码仓库按 LineageOS 的方式拼成一个 kleaf 工作区，跑和 LineageOS
+自己完全一样的 bazel 命令，然后把产物打成可以直接 `fastboot flash boot` 的镜像。
+
+---
+
+## 1. 编译什么
+
+| 角色 | 仓库 | 放在工作区的路径 |
+| --- | --- | --- |
+| GKI / ACK | `android.googlesource.com/kernel/common` @ `android16-6.12-2026-06` | `kernel/platform/kernel-6.12/common` |
+| kleaf 构建系统 | `kernel/build`（由 LineageOS 清单钉版本） | `kernel/platform/kernel-6.12/build/kernel` |
+| CLO / SoC 内核 | `LineageOS/android_kernel_oneplus_sm8850` | `…/vendor/oneplus/sm8850` |
+| Techpack modules | `LineageOS/android_kernel_oneplus_sm8850-modules` | `…/vendor/oneplus/sm8850-modules` |
+| Techpack devicetrees | `LineageOS/android_kernel_oneplus_sm8850-devicetrees` | `…/vendor/oneplus/sm8850-devicetrees` |
+
+设备是 `infiniti`（OnePlus 15，CPH2745/2747/2749、PLK110），高通平台名是
+**canoe**，编译目标 `canoe_perf`。
+
+这些路径不是我猜的，是 LineageOS 自己的
+`android_device_oneplus_sm8850-common/lineage.dependencies` 写死的：
+
+```json
+{ "type": "kernel", "version": "6.12" },
+{ "repository": "android_kernel_oneplus_sm8850",
+  "target_path": "kernel/platform/kernel-6.12/vendor/oneplus/sm8850" },
+```
+
+`{"type": "kernel"}` 会被 `roomservice.py` 展开成
+`<include name="manifests/snippets/kernel-6.12.xml"/>`，也就是 GKI + kleaf +
+全部 kernel 预编译工具链的来源。**GKI 的版本正是楼主链接里的
+`android16-6.12-2026-06`**，所以默认情况下不需要手动指定。
+
+## 2. 实际跑的编译命令
+
+来自 `LineageOS/android_vendor_lineage` → `build/tasks/kernel.mk`（`TARGET_KERNEL_PLATFORM_TARGET`
+非空的那条分支），逐字复刻：
+
+```bash
+cd kernel/platform/kernel-6.12
+./tools/bazel \
+    --output_user_root=out/bazel --output_root=out/bazel \
+    run \
+    --experimental_convenience_symlinks=ignore \
+    --cpu=arm64 \
+    --repo_manifest <platform>:<out/manifest.xml> \
+    --config=stamp \
+    --//vendor/oneplus/sm8850:dtbo_config=//vendor/oneplus/sm8850-devicetrees:infiniti_dtbo_config \
+    //vendor/oneplus/sm8850:canoe_perf_dist \
+    -- --destdir=out/dist
+```
+
+几个容易踩的点，都已经处理：
+
+* `tools/bazel`、`MODULE.bazel`、`WORKSPACE.bzlmod` 是 `repo` 的 **linkfile**，必须由
+  `repo sync` 创建，手抄会漏（kleaf 走 bzlmod）。
+* `--repo_manifest` 需要 `kernel/platform/kernel-6.12` 下的项目清单，由
+  `.ci/gen-kleaf-manifest.py` 按 LineageOS 的 `kernel_kleaf_manifest.py`
+  同样逻辑从 `.repo/project.list` 生成。
+* `dtbo_config` 那个 flag 就是设备 `BoardConfig.mk` 里的
+  `TARGET_KERNEL_BAZEL_FLAGS`，不传的话 DTBO 会用默认列表，`infiniti` 的 overlay 不全。
+* `//bootable/bootloader/edk2:*_abl` 这类目标**不在任何 LineageOS 清单里**。只要
+  只请求 `..._dist`，它们就不会被分析，所以不需要 ABL 仓库 —— LineageOS 也是这么绕过去的。
+
+## 3. `CONFIG_TMPFS_XATTR=y` 加在哪、怎么保证生效
+
+**结论：GKI 里它是关闭的，这个改动是真实有效的。**
+
+* `arch/arm64/configs/gki_defconfig` 只有 `CONFIG_TMPFS=y`，从没提过 `TMPFS_XATTR`；
+* `fs/Kconfig` 里 `config TMPFS_XATTR` 是 `bool`、`default n`；
+* 所以默认就是 `n`，必须显式打开。
+
+注入点是 SoC 树的 **kleaf defconfig 字典**：
+
+```
+vendor/oneplus/sm8850/configs/canoe_perf.bzl
+```
+
+`kleaf-scripts/defconfig_fragment.bzl` 会把这个 dict 还原成 defconfig 片段，作为
+`post_defconfig_fragment` 在 `gki_defconfig` **之后**合并。`consolidate` 变体通过
+`android_build.bzl` 的 `implicit_config_fragment = perf_config` 继承同一份，所以改一处
+两个变体都覆盖。
+
+要加别的开关，直接编辑 `.ci/extra.config`（普通 `.config` 语法，`=y`/`=m`/
+`="字符串"`/`# CONFIG_X is not set` 都支持），`.ci/apply-config.py` 会保持文件里
+`# keep sorted` 的排序习惯并幂等合并。
+
+**验证不是靠看片段，而是把 config 从 Image 里读回来**：GKI 有 `CONFIG_IKCONFIG=y`，
+所以 `.ci/40-verify.sh` 用 `scripts/extract-ikconfig` 从编译出的 `Image` 中提取
+`.config`，确认 `CONFIG_TMPFS_XATTR=y` 真的在里面；读不到就**让 job 失败**，而不是
+静默交付一个没生效的内核。
+
+## 4. 怎么用（放在你 fork 的 `android_kernel_oneplus_sm8850` 里）
+
+CI 文件的位置刻意避开了内核树自己占用的名字：
+
+```
+.github/workflows/build-kernel.yml   工作流（内核树没有 .github/）
+.ci/                                 全部脚本（内核树没有 .ci/）
+.ci/extra.config                     CONFIG_TMPFS_XATTR=y 片段
+.ci/patch/0001-*.diff             可选：把配置直接提交进内核树的补丁
+```
+
+* **不用 `scripts/`**：内核树自己有 `scripts/`，kbuild 的 `Makefile.build`、
+  `extract-ikconfig` 都在里面，我的脚本混进去会污染它。
+* **不带根 `.gitignore`**：内核自己有一份，直接放我的会把它**覆盖掉**。构建产物
+  （`.work/`、`out/`）本地跑的话，用不进入版本库的方式忽略：
+
+  ```bash
+  printf '.work/\nout/\n' >> .git/info/exclude
+  ```
+
+### 4.1 推送（这一步必须你来）
+
+我在这个环境里**推不了**，实测原因：
+
+* SSH：密钥认证本身是通的（`ssh -T git@github.com` 返回 `Hi txtyb!`），但 **git 的 SSH
+  传输要 spawn `sh`，沙箱禁止 msys 创建管道**，`git ls-remote`/`push` 直接崩；
+* HTTPS：传输没问题（能匿名读到你的 fork），但**没有任何可用凭据** —— GCM 里没存
+  github.com 的 token，且无法交互提示。
+
+所以请在你自己的终端里跑：
+
+```bash
+cd /path/to/android_kernel_oneplus_sm8850          # 你的 fork
+cp -r <本目录>/.ci     ./
+cp -r <本目录>/.github ./
+git add .ci .github
+git commit -m "ci: build the OnePlus 15 (canoe) OSS kernel with CONFIG_TMPFS_XATTR=y"
+git push origin lineage-24.0
+```
+
+### 4.2 先在 fork 上启用 Actions
+
+Fork 默认**不开** Actions：仓库 → Actions 标签 → "I understand my workflows, go ahead and
+enable them"。另外 `workflow_dispatch` 要求工作流位于**默认分支**上才会出现在列表里 ——
+这个 fork 的默认分支就是 `lineage-24.0`，所以 4.1 推上去之后即可见。
+
+### 4.3 触发
+
+Actions → "OnePlus 15 OSS kernel" → Run workflow。
+
+默认参数就是**PixelOS 17 那个 ROM 用的同一份源码**
+（上游 `LineageOS/android_kernel_oneplus_sm8850@lineage-24.0`），所以默认结果可复现。
+
+要编译**你自己 fork 里的改动**，改两个输入：
+
+```yaml
+clo_repo:     txtyb/android_kernel_oneplus_sm8850
+clo_revision: lineage-24.0
+```
+
+或者本地：`CLO_REPO=... CLO_REVISION=... bash .ci/10-sync.sh`。
+（`clo_remote_fetch` 默认 `https://github.com`，换托管平台时改它。）
+
+只允许手动触发是故意的：一次冷跑要下 ~15 GB、编译很久，不该在每次 push 时自动发生。
+
+`.ci/20-config.sh` 是幂等的：如果内核树里**已经**有 `"CONFIG_TMPFS_XATTR": "y"`，它会
+识别为已存在（exit 2）并跳过，不会重复插入。而 `.ci/patch/0001-*.diff` 可以直接
+`git am` 到 fork 的 `lineage-24.0` 上 —— 那样配置就固化进内核源，而不是构建时注入。
+
+### 产物清单
+
+产物在 `out/release/`，上传成名为
+`op15-oss-kernel-canoe_perf-<run_number>` 的 artifact：
+
+```
+kernel/Image                 ROM 真正打进 boot.img 的内核镜像
+kernel/dtb.img, kernel/*.dtb BOARD_INCLUDE_DTB_IN_BOOTIMG 用的 DT
+flash/boot.img               可直接 fastboot flash boot
+flash/vendor_boot.img        vendor ramdisk + DTB
+flash/dtbo.img               dtbo 分区
+flash/vendor_dlkm.img        模块分区
+modules/*.ko + *.modules.load
+config/kernel.config         从 Image 里读回来的真实配置
+FILES_IN_DIST.txt            dist 全部内容清单
+README-FLASH.txt             刷机/回滚/验证说明
+```
+
+### 本地也能跑
+
+（Linux，需要约 40 GB 空闲）
+
+```bash
+bash .ci/00-deps.sh      # 装依赖 + repo
+bash .ci/10-sync.sh      # 拉源码（约 15 GB，最慢的一步）
+bash .ci/20-config.sh    # 注入 CONFIG_TMPFS_XATTR=y
+bash .ci/30-build.sh     # bazel 编译
+bash .ci/40-verify.sh    # 从 Image 校验配置
+bash .ci/50-package.sh   # 打包
+```
+
+## 5. 刷机前请务必注意
+
+* **先备份你现在正在用的 `boot.img` / `vendor_boot.img` / `dtbo.img`**，从你正在跑的
+  PixelOS zip 里的 `payload.bin` 解出来（`payload-dumper-go`）。内核刷错又没备份，
+  就只能回 fastboot 刷官方包。
+* 只换内核的话刷 `boot.img` 就够：GKI 内核在 `boot`，通用 ramdisk 在 `init_boot`
+  （所以不动 ramdisk 是刻意的）。`dtbo`/`vendor_boot` 只在 DTB 变了的时候才需要刷。
+* **不要刷 `super.img`**，那是整个动态分区镜像。
+* 我们的改动只有一个 `CONFIG_TMPFS_XATTR=y`，不改变模块 ABI，所以 `vendor_dlkm` /
+  `system_dlkm` 正常不需要更新（`.ko` 和两份 `modules.load` 还是打进去了，备用）。
+* 产物是**未签名**镜像。PixelOS 的 vbmeta 是
+  `BOARD_AVB_MAKE_VBMETA_IMAGE_ARGS += --flags 3`（关闭校验和 verity）+ bootloader 已解锁，
+  所以未签名 boot image 是预期能启动的。
+
+## 6. 已知限制 / 我没能验证的部分
+
+说清楚比假装都验过要好：
+
+1. **我没有完整跑过一遍编译。** 这台机器只能通过一个 ~0.4 MB/s 的代理联网，拉 15 GB
+   工作区不现实。工作流的每一步都是对着 LineageOS/高通上游源码逐条比对写出来的
+   （命令、路径、flag、注入点、依赖关系都引自上游文件），但**第一次 CI 运行仍可能需要
+   微调**。
+2. **磁盘是最可能失败的地方。** hosted `ubuntu-latest` 只有约 14 GB 空闲，工作流里先删掉
+   .NET/Android SDK/CodeQL 等能腾出 ~25 GB，总共约 40 GB。不够就在 `runner` 输入里换成
+   更大的 runner。CI 日志里会打印每一步的 `df -h`。
+3. **dist 里的具体文件名**依赖高通的 `android_build.bzl`，我用通配符收集并额外生成
+   `FILES_IN_DIST.txt`。如果某个镜像名字变了，看这个清单即可，脚本不会因此失败。
+4. 冷编译耗时较长（拉源码 + bazel 全量），超时设成了 6 小时。没做 bazel 缓存：
+   工作区十几 GB，超出 GitHub Actions 10 GB 的 cache 上限。
+5. `gki_revision` 保持默认 `auto`，即跟随 LineageOS 片段钉的 tag。如果你要换 GKI
+   （比如 `android16-6.12-2026-09`），用这个输入即可 —— 它会写一条
+   `<remove-project>` + 重新声明 `kernel/common`。**但换 GKI 有 KMI 不匹配的风险**：
+   CLO 树是按特定 ACK 版本对齐符号的，换 tag 可能编译失败或启动异常。
