@@ -70,6 +70,16 @@ cd kernel/platform/kernel-6.12
   `TARGET_KERNEL_BAZEL_FLAGS`，不传的话 DTBO 会用默认列表，`infiniti` 的 overlay 不全。
 * `//bootable/bootloader/edk2:*_abl` 这类目标**不在任何 LineageOS 清单里**。只要
   只请求 `..._dist`，它们就不会被分析，所以不需要 ABL 仓库 —— LineageOS 也是这么绕过去的。
+* **必须显式打开 DDK unsafe headers**，否则编译到
+  `//vendor/oneplus/sm8850:canoe_perf/drivers/base/regmap/qti-regmap-debugfs` 会死在
+  `fatal error: 'drivers/base/regmap/internal.h' file not found`。SoC 仓库自带
+  `device.bazelrc` 就是干这个的，但**整个仓库里没有任何地方引用它**，`lineage-kernel.mk`
+  里也没有 `TARGET_KERNEL_UNSAFE_DDK_HEADERS` 的翻译 —— 必须显式传给 bazel。
+  注意它写的是 `//soc-repo:unsafe_headers_qcom_group`（高通布局），本仓库把 SoC 树放在
+  `vendor/oneplus/sm8850`，标签要改写。`.ci/30-build.sh` 直接传这三个 flag：
+  `--//build/kernel/kleaf:allow_ddk_unsafe_headers`、
+  `--//build/kernel/kleaf:user_ddk_unsafe_headers=//vendor/oneplus/sm8850:unsafe_headers_qcom_group`、
+  `--check_visibility=false`。要整份文件传就设 `SOC_DEVICE_BAZELRC=1`。
 
 ## 3. `CONFIG_TMPFS_XATTR=y` 加在哪、怎么保证生效
 

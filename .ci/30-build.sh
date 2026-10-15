@@ -33,6 +33,35 @@ echo "  dist dir    = $DIST"
 
 cd "$KERNEL_PATH"
 
+# The SoC repo ships a device.bazelrc that turns on the DDK unsafe-header
+# whitelist, but nothing in the repo references it -- it has to reach bazel
+# explicitly, and LineageOS gets it there through board-config plumbing that is
+# not visible from kernel.mk. Without it the build dies at
+#
+#   //vendor/oneplus/sm8850:canoe_perf/drivers/base/regmap/qti-regmap-debugfs
+#   fatal error: 'drivers/base/regmap/internal.h' file not found
+#
+# because BUILD.bazel:212 only exposes the GKI-internal headers to DDK modules
+# when allow_ddk_unsafe_headers is set. Two details differ from the file:
+#   * its label is //soc-repo:... (Qualcomm's layout); this tree checks the SoC
+#     repo out at vendor/oneplus/sm8850, so the label is rewritten.
+#   * the socrepo/qtisocrepo flags are left out: the module graph already
+#     resolves without them (proved by the failed run reaching the compile step
+#     of the right module), so they are not needed to fix this.
+# Set SOC_DEVICE_BAZELRC=1 to pass the whole file instead, verbatim.
+SOC_FLAGS=()
+if [ "$SOC_DEVICE_BAZELRC" = "1" ]; then
+    sed "s|//soc-repo:|//$KERNEL_SRC_REL:|g" "$SOC_REPO/device.bazelrc" > "$OUT/device.bazelrc"
+    SOC_FLAGS+=("--bazelrc=$OUT/device.bazelrc")
+else
+    SOC_FLAGS+=(
+        "--//build/kernel/kleaf:allow_ddk_unsafe_headers"
+        "--//build/kernel/kleaf:user_ddk_unsafe_headers=//$KERNEL_SRC_REL:unsafe_headers_qcom_group"
+        "--check_visibility=false"
+    )
+fi
+printf '  ddk flags   = %s\n' "${SOC_FLAGS[*]}"
+
 set -x
 ./tools/bazel \
     --output_user_root="$BAZEL_OUT" \
@@ -42,6 +71,7 @@ set -x
     --cpu="$KERNEL_ARCH" \
     --repo_manifest "$KERNEL_PLATFORM:$OUT/manifest.xml" \
     --config=stamp \
+    "${SOC_FLAGS[@]}" \
     "--//$KERNEL_SRC_REL:dtbo_config=$DTBO_CONFIG" \
     $EXTRA_BAZEL_FLAGS \
     "//$KERNEL_SRC_REL:${TARGET}_dist" \

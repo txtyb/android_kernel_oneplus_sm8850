@@ -82,6 +82,11 @@ export DTBO_CONFIG="${DTBO_CONFIG:-//vendor/oneplus/sm8850-devicetrees:${DEVICE}
 # Any extra bazel flags, appended verbatim.
 export EXTRA_BAZEL_FLAGS="${EXTRA_BAZEL_FLAGS:-}"
 
+# Set to 1 to hand the SoC repo's device.bazelrc to bazel verbatim (with its
+# //soc-repo label rewritten for this tree) instead of the individual flags
+# .ci/30-build.sh names.
+export SOC_DEVICE_BAZELRC="${SOC_DEVICE_BAZELRC:-0}"
+
 # --------------------------------------------------------------------------
 # Where things live
 # --------------------------------------------------------------------------

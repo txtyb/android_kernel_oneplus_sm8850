@@ -26,7 +26,11 @@ cd "$KERNEL_PLATFORM"
 
 if [ ! -d .repo ]; then
     log "repo init -u $MANIFEST_URL -b $KERNEL_BRANCH"
-    repo init -u "$MANIFEST_URL" -b "$KERNEL_BRANCH" --no-clone-bundle --depth=1
+    # No --depth here: the only version of it this repo launcher accepts is on
+    # some subcommands and not others (observed: 'repo sync --depth' fails with
+    # "error: no such option: --depth"). The manifest already carries
+    # clone-depth="1" for the big prebuilt projects, which is what matters.
+    repo init -u "$MANIFEST_URL" -b "$KERNEL_BRANCH" --no-clone-bundle
 else
     log "reusing existing repo workspace at $KERNEL_PLATFORM"
 fi
@@ -90,13 +94,13 @@ repo manifest -o "$FULL_MANIFEST"
 mapfile -t SYNC_PATHS < <(python3 "$REPO_ROOT/.ci/list-platform-paths.py" "$FULL_MANIFEST" "$PLATFORM_REL")
 [ "${#SYNC_PATHS[@]}" -gt 0 ] || die "no projects found under $PLATFORM_REL"
 
-log "Syncing ${#SYNC_PATHS[@]} projects (current branch only, depth 1)"
+log "Syncing ${#SYNC_PATHS[@]} projects (current branch only)"
+# No --depth: this repo launcher's sync rejects it ("error: no such option:
+# --depth"). Measured on a hosted runner: a full-history sync of the platform
+# plus the three OnePlus repos lands at ~29 GB and takes ~13 minutes, which the
+# runner's 145 GB root filesystem absorbs comfortably.
 set -x
-if ! repo sync -c --no-tags --force-sync --depth=1 -j"$JOBS" "${SYNC_PATHS[@]}"; then
-    set +x
-    warn "depth-1 sync failed; retrying with full history (slower, more disk)"
-    repo sync -c --no-tags --force-sync -j"$JOBS" "${SYNC_PATHS[@]}"
-fi
+repo sync -c --no-tags --force-sync -j"$JOBS" "${SYNC_PATHS[@]}"
 set +x
 
 log "Verifying the workspace layout"
