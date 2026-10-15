@@ -1,2 +1,2 @@
-AnyKernel3 + init_boot build
-2026-10-15T14:09:54Z
+retry after DDK unsafe-header fix
+2026-10-15T15:05:26Z
