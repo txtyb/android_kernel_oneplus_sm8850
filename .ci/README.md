@@ -246,6 +246,26 @@ README-FLASH.txt             刷机/回滚/验证说明
 
 刷之前先跟设备上的比一下大小；**默认建议保留 ROM 原来的 init_boot**：
 
+**实测结论（run 39029979458，全绿的那一轮）**：派生不出来，而且这不是我脚本的问题 ——
+`60-flashable.sh` 依次试了 dist 里三个 boot 镜像，全部报告**没有 ramdisk**：
+
+```
+[warn] boot-gz.img has no ramdisk; skipping it
+[warn] boot-lz4.img has no ramdisk; skipping it
+[warn] boot.img has no ramdisk; skipping it
+[warn] shipping without init_boot.img
+```
+
+也就是说这个构建里的 boot 镜像**只有内核、根本不含 ramdisk**（通用 ramdisk 来自 ROM
+自己的 GKI prebuilt，不经过内核编译）。所以 `init_boot.img` 在这个流程里**无法产出、
+也不需要产出**：
+
+* AnyKernel3 包用 `split_boot`/`flash_boot`，**完全不碰 init_boot**；
+* 你的内核改动（`CONFIG_TMPFS_XATTR`，内置）不改变 ramdisk。
+
+真要一份的话，从你正在跑的 PixelOS zip 里解（`payload.bin` → `payload-dumper-go`），
+或者直接用设备上现有的那份。
+
 ```bash
 adb shell 'ls -l /dev/block/by-name/init_boot'
 ```
