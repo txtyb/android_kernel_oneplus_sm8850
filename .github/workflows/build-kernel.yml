@@ -60,6 +60,13 @@ on:
         description: Extra flags appended verbatim to the bazel command line
         default: ""
         required: false
+      kernel_localversion:
+        description: >-
+          CONFIG_LOCALVERSION for the GKI defconfig. The kernel release ends up
+          in every module's vermagic, so it must match the ROM's "uname -r"
+          suffix or none of the ROM's vendor modules will load.
+        default: "-g41a2024a9e2e-4k"
+        required: false
       bazel_disk_cache:
         description: >-
           Restore/save a bazel --disk_cache slice (10 GB budget). Only pays off
@@ -91,6 +98,7 @@ env:
   # Empty unless bazel_disk_cache is enabled; 30-build.sh only adds --disk_cache
   # when this is non-empty.
   BAZEL_DISK_CACHE: ${{ inputs.bazel_disk_cache && 'out/bazel-cache' || '' }}
+  KERNEL_LOCALVERSION: ${{ inputs.kernel_localversion || '-g41a2024a9e2e-4k' }}
 
 jobs:
   build:

@@ -54,6 +54,24 @@ case "$rc" in
 esac
 grep -n 'CONFIG_TMPFS' "$GKI_DEFCONFIG" || warn "no CONFIG_TMPFS* line in gki_defconfig"
 
+# Match the ROM's kernel release string when asked. See lib.sh for why: the
+# release is part of every module's vermagic.
+if [ -n "$KERNEL_LOCALVERSION" ]; then
+    lv_fragment="$OUT/localversion.config"
+    printf 'CONFIG_LOCALVERSION="%s"\n' "$KERNEL_LOCALVERSION" > "$lv_fragment"
+    log "Forcing CONFIG_LOCALVERSION=\"$KERNEL_LOCALVERSION\" so vermagic matches the ROM"
+    set +e
+    python3 "$REPO_ROOT/.ci/patch-defconfig.py" "$GKI_DEFCONFIG" "$lv_fragment"
+    rc=$?
+    set -e
+    case "$rc" in
+        0) log "localversion set" ;;
+        2) log "localversion already set" ;;
+        *) die "patch-defconfig.py failed for the localversion (exit $rc)" ;;
+    esac
+    grep -n '^CONFIG_LOCALVERSION=' "$GKI_DEFCONFIG"
+fi
+
 # --------------------------------------------------------------------------
 # 2. the vendor DDK / DTB configuration
 # --------------------------------------------------------------------------

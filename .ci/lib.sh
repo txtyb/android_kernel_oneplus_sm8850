@@ -92,6 +92,19 @@ export SOC_DEVICE_BAZELRC="${SOC_DEVICE_BAZELRC:-0}"
 # bazel_disk_cache input is enabled.
 export BAZEL_DISK_CACHE="${BAZEL_DISK_CACHE:-}"
 
+# Optional CONFIG_LOCALVERSION override for the GKI defconfig.
+#
+# The kernel release string ends up in every module's vermagic, and with
+# CONFIG_MODVERSIONS=y the kernel refuses modules built against a different
+# release. A ROM built elsewhere gets a "-g<sha>" suffix from setlocalversion
+# that this build does not reproduce (the sandbox has no git), so the releases
+# differ and none of the ROM's vendor modules load -- which looks exactly like a
+# hang at the boot animation.
+#
+# Set this to the suffix your ROM's "uname -r" shows between "-android16-6" and
+# "-4k" to make the release identical. Empty leaves upstream's "-4k" alone.
+export KERNEL_LOCALVERSION="${KERNEL_LOCALVERSION:-}"
+
 # --------------------------------------------------------------------------
 # Where things live
 # --------------------------------------------------------------------------
