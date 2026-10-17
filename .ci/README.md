@@ -89,25 +89,54 @@ cd kernel/platform/kernel-6.12
 * `fs/Kconfig` 里 `config TMPFS_XATTR` 是 `bool`、`default n`；
 * 所以默认就是 `n`，必须显式打开。
 
-注入点是 SoC 树的 **kleaf defconfig 字典**：
+注入点是**两处**，因为这台机器上它们控制的东西不一样（这一点是跑了 3 轮真实构建才确认的，
+不要只看一处）：
+
+### 3.1 真正会启动的内核 = GKI，配置必须写进 GKI
+
+```
+kernel/platform/kernel-6.12/common/arch/arm64/configs/gki_defconfig
+```
+
+依据：
+* 设备 `BoardConfigCommon.mk` 写着 `BOARD_USES_GENERIC_KERNEL_IMAGE := true`；
+* `vendor/lineage/build/tasks/kernel.mk` 交给 ROM 的是
+  `TARGET_PREBUILT_INT_KERNEL := $(KERNEL_OUT)/Image`，也就是 `out/dist/Image`；
+* 而 `out/dist/Image` **就是 GKI 内核**（`//common:kernel_aarch64`）。
+
+`.ci/patch-defconfig.py` 负责这一处（幂等，保留行尾风格）。
+
+### 3.2 高通/CLO 的 kleaf defconfig 字典 = 只驱动模块和 DT
 
 ```
 vendor/oneplus/sm8850/configs/canoe_perf.bzl
 ```
 
-`kleaf-scripts/defconfig_fragment.bzl` 会把这个 dict 还原成 defconfig 片段，作为
-`post_defconfig_fragment` 在 `gki_defconfig` **之后**合并。`consolidate` 变体通过
-`android_build.bzl` 的 `implicit_config_fragment = perf_config` 继承同一份，所以改一处
-两个变体都覆盖。
+`kleaf-scripts/modules_register.bzl:98` 用它生成 `canoe_perf_merged_defconfig`，
+再由 `dtbs.bzl:109` 作为 `post_defconfig_fragments` 传给 `canoe_perf_dtb_build` ——
+那条链路产出的是**模块和 DTB**，**不会**进到 `Image`。本机型所有高通代码都是可加载模块
+（这正是楼主说的"audio and display components now built from source" 体现为一堆 `.ko`）。
+`.ci/apply-config.py` 负责这一处，保持文件里 `# keep sorted` 的排序习惯。
 
-要加别的开关，直接编辑 `.ci/extra.config`（普通 `.config` 语法，`=y`/`=m`/
-`="字符串"`/`# CONFIG_X is not set` 都支持），`.ci/apply-config.py` 会保持文件里
-`# keep sorted` 的排序习惯并幂等合并。
+### 3.3 证据（不是我推断的，是真实构建日志）
 
-**验证不是靠看片段，而是把 config 从 Image 里读回来**：GKI 有 `CONFIG_IKCONFIG=y`，
-所以 `.ci/40-verify.sh` 用 `scripts/extract-ikconfig` 从编译出的 `Image` 中提取
-`.config`，确认 `CONFIG_TMPFS_XATTR=y` 真的在里面；读不到就**让 job 失败**，而不是
-静默交付一个没生效的内核。
+第 2 轮（run `38772010956`）只改字典时：
+
+| 配置来源 | `CONFIG_TMPFS_XATTR` | CLO 标记（`CONFIG_ARCH_CANOE` / `OPLUS_CHARGER`） |
+|---|---|---|
+| `kleaf` 的 `dist/.config`（9599 行） | **`=y`** | 全在 |
+| `Image` 内嵌配置（8204 行） | `# ... is not set` | **一个都没有** → 纯 GKI |
+
+这就是为什么现在两处都写。`.ci/extra.config` 是唯一的输入文件。
+
+要加别的开关，直接编辑 `.ci/extra.config`（`=y`/`=m`/`="字符串"`/`# CONFIG_X is not set`
+都支持），两个脚本都会幂等应用。
+
+**验证不是靠看片段，而是把 config 从 `Image` 里读回来**：GKI 有 `CONFIG_IKCONFIG=y`，
+所以 `.ci/40-verify.sh` 用 `scripts/extract-ikconfig` 从 `out/dist/Image` 提取配置，同时
+对照 `dist/.config`、打印 CLO 标记判断每份配置属于哪个内核，再决定是
+"A. Image 不是 SoC 配置描述的那个内核" 还是 "B. fragment 根本没到 Kbuild"；
+不通过就**让 job 失败**，而不是静默交付一个没生效的内核。
 
 ## 4. 怎么用（放在你 fork 的 `android_kernel_oneplus_sm8850` 里）
 

@@ -1,29 +1,66 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-2.0-only
 #
-# Apply configs/<fragment> to the SoC kernel's defconfig dict.
+# Put the requested options where they actually take effect.
 #
-# Why a dict and not a defconfig file: the Qualcomm CLO tree keeps its vendor
-# configuration in vendor/oneplus/sm8850/configs/<soc>_<variant>.bzl and kleaf
-# (kleaf-scripts/defconfig_fragment.bzl) converts it back into a defconfig
-# fragment merged after gki_defconfig. See .ci/apply-config.py.
+# There are TWO config surfaces in this workspace and they do different things:
+#
+#   1. GKI/ACK  kernel/platform/kernel-6.12/common/arch/arm64/configs/gki_defconfig
+#      The image that boots is //common:kernel_aarch64, built from this file.
+#      device/oneplus/sm8850-common/BoardConfigCommon.mk says
+#         BOARD_USES_GENERIC_KERNEL_IMAGE := true
+#      and vendor/lineage's kernel.mk hands the ROM
+#         TARGET_PREBUILT_INT_KERNEL := $(KERNEL_OUT)/Image
+#      i.e. out/dist/Image, which is the GKI image. A kernel option that has to
+#      exist in the running kernel must be set HERE.
+#
+#   2. vendor/oneplus/sm8850/configs/canoe_perf.bzl
+#      The Qualcomm kleaf defconfig dict. It drives the vendor DDK modules and
+#      the device trees (kleaf-scripts/modules_register.bzl:98 ->
+#      canoe_perf_merged_defconfig -> dtbs.bzl post_defconfig_fragments), and it
+#      never reaches that kernel binary. On this device all vendor code is built
+#      as loadable modules, which is why "audio and display components built
+#      from source" shows up as .ko files in vendor_dlkm.
+#
+# Proof from run 38772010956: after patching only the dict, kleaf's dist/.config
+# had CONFIG_TMPFS_XATTR=y and CONFIG_ARCH_CANOE=y, while the config embedded in
+# out/dist/Image had no CLO symbol at all. So both surfaces get the fragment:
+# the GKI defconfig because that is the kernel, and the dict so the module/DTB
+# configuration agrees with it.
 
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 FRAGMENT="$CONFIG_FRAGMENT"
-DEFCONFIG="$SOC_REPO/configs/$DEFCONFIG_DICT"
+GKI_DEFCONFIG="$KERNEL_PATH/common/arch/arm64/configs/gki_defconfig"
+SOC_DEFCONFIG="$SOC_REPO/configs/$DEFCONFIG_DICT"
 
 require_dir "$SOC_REPO"
-require_file "$DEFCONFIG"
 require_file "$FRAGMENT"
 
-log "Merging $(basename "$FRAGMENT") into configs/$DEFCONFIG_DICT"
-log "  (gki_defconfig has CONFIG_TMPFS=y but never sets TMPFS_XATTR, and"
-log "   fs/Kconfig declares it 'default n' -- so it is 'n' unless we ask)"
-
+# --------------------------------------------------------------------------
+# 1. the kernel that actually boots
+# --------------------------------------------------------------------------
+require_file "$GKI_DEFCONFIG"
+log "Patching the GKI defconfig (this is the kernel that boots)"
 set +e
-python3 "$REPO_ROOT/.ci/apply-config.py" "$DEFCONFIG" "$FRAGMENT"
+python3 "$REPO_ROOT/.ci/patch-defconfig.py" "$GKI_DEFCONFIG" "$FRAGMENT"
+rc=$?
+set -e
+case "$rc" in
+    0) log "gki_defconfig updated" ;;
+    2) log "gki_defconfig already up to date" ;;
+    *) die "patch-defconfig.py failed (exit $rc)" ;;
+esac
+grep -n 'CONFIG_TMPFS' "$GKI_DEFCONFIG" || warn "no CONFIG_TMPFS* line in gki_defconfig"
+
+# --------------------------------------------------------------------------
+# 2. the vendor DDK / DTB configuration
+# --------------------------------------------------------------------------
+require_file "$SOC_DEFCONFIG"
+log "Merging $(basename "$FRAGMENT") into configs/$DEFCONFIG_DICT (modules + DTBs)"
+set +e
+python3 "$REPO_ROOT/.ci/apply-config.py" "$SOC_DEFCONFIG" "$FRAGMENT"
 rc=$?
 set -e
 case "$rc" in
@@ -31,19 +68,29 @@ case "$rc" in
     2) log "config dict already up to date" ;;
     *) die "apply-config.py failed (exit $rc)" ;;
 esac
+grep -n '"CONFIG_TMPFS' "$SOC_DEFCONFIG" || warn "no CONFIG_TMPFS* entry found"
 
-log "TMPFS entries now in $DEFCONFIG_DICT"
-grep -n '"CONFIG_TMPFS' "$DEFCONFIG" || warn "no CONFIG_TMPFS* entry found"
+# --------------------------------------------------------------------------
+# 3. record exactly what changed
+# --------------------------------------------------------------------------
+log "Diffs against the checkouts"
+git -C "$KERNEL_PATH/common" --no-pager diff --stat -- arch/arm64/configs/gki_defconfig || true
+git -C "$SOC_REPO" --no-pager diff --stat -- "configs/$DEFCONFIG_DICT" || true
 
-if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ -d "$SOC_REPO/.git" ]; then
+if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
     {
-        echo "### Kernel config change"
+        echo "### Kernel config changes"
+        echo
+        echo "GKI defconfig (the image that boots):"
         echo
         echo '```diff'
-        git -C "$SOC_REPO" --no-pager diff -- "configs/$DEFCONFIG_DICT" || true
+        git -C "$KERNEL_PATH/common" --no-pager diff -- arch/arm64/configs/gki_defconfig 2>/dev/null || true
+        echo '```'
+        echo
+        echo "Vendor defconfig dict (modules + DTBs):"
+        echo
+        echo '```diff'
+        git -C "$SOC_REPO" --no-pager diff -- "configs/$DEFCONFIG_DICT" 2>/dev/null || true
         echo '```'
     } >> "$GITHUB_STEP_SUMMARY"
 fi
-
-log "Diff against the checkout"
-git -C "$SOC_REPO" --no-pager diff --stat -- "configs/$DEFCONFIG_DICT" || true
