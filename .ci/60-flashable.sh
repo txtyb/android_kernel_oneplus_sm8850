@@ -60,6 +60,19 @@ git clone -q "$AK3_REPO" "$AK3_DIR"
 git -C "$AK3_DIR" checkout -q "$AK3_REF"
 rm -rf "$AK3_DIR/.git" "$AK3_DIR/.github"
 
+# Native tools. AnyKernel3 ships 32-bit ARM busybox/magiskboot; they are the only
+# 32-bit dependency in this zip, and when one cannot execute the flasher dies with
+# "Busybox setup failed. Aborting..." (setup_bb() or its symlink install fails).
+# AnyKernel3's README points at the Magisk release for other architectures. This
+# is best-effort: if the download fails we keep the bundled binaries rather than
+# failing a build that otherwise succeeded.
+log "Looking for native aarch64 busybox/magiskboot in the Magisk release"
+if python3 "$REPO_ROOT/.ci/ak3-tools.py" "$AK3_DIR"; then
+    :
+else
+    warn "keeping AnyKernel3's bundled 32-bit ARM tools"
+fi
+
 require_file "$AK3_DIR/anykernel.sh"
 require_file "$AK3_DIR/tools/magiskboot"
 require_file "$AK3_DIR/tools/ak3-core.sh"
