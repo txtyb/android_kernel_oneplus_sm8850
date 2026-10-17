@@ -99,20 +99,41 @@ BACK UP FIRST
   the PixelOS zip you are running right now (payload-dumper-go payload.bin) and
   keep them. Worst case you can also just re-sideload that same ROM zip.
 
-INSTALL -- pick ONE
-  a) AnyKernel3 zip, via a flasher that can run its update-binary
-     (Kernel Flasher or a root shell). Touches only boot, leaves the ramdisk
-     alone (split_boot/flash_boot), because the ramdisk lives in init_boot.
+INSTALL -- use the AnyKernel3 zip (a)
 
-  b) fastboot (unlocked bootloader)
-       adb reboot bootloader
-       fastboot getvar current-slot            # note the slot
-       fastboot flash boot images/boot.img
-       fastboot reboot
-     Flash dtbo/vendor_boot only if the device trees changed; for a config-only
-     change they did not.
+  a) PREFERRED. The AnyKernel3 zip swaps only the kernel inside the boot.img
+     already on your device, so the ROM's cmdline, bootconfig, header version
+     and DTB all stay as they are. Use a flasher that can run its
+     update-binary (Kernel Flasher, or a root shell).
 
-  Never flash super.img from here: it is the whole dynamic-partition image.
+  b) fastboot flash boot images/boot.img -- DO NOT DO THIS FIRST.
+     images/boot.img is built by kleaf's kernel_images, NOT by Android build/make
+     the way this ROM's boot.img is. build/make fills in the device's
+     BOARD_BOOTCONFIG (androidboot.hardware=qcom, hypervisor.version=gunyah,
+     memcg=1, usbcontroller=..., vendor.qspa=true), while canoe.bzl's
+     boot_image_opts() only adds androidboot.serialconsole=0. Flashing it
+     directly therefore drops most of the bootconfig, and the device hangs at the
+     boot animation because init never sees the right hardware parameters.
+     Verified failure mode: flashing this image directly produced exactly that.
+
+     If you must use fastboot, first compare the two cmdlines:
+       adb shell cat /proc/cmdline
+       adb shell cat /proc/bootconfig
+     If androidboot.hardware / hypervisor.* are missing afterwards, that is why.
+
+  Flash dtbo/vendor_boot only if the device trees changed; for a config-only
+  change they did not. Never flash super.img from here.
+
+IF IT HANGS AT THE BOOT ANIMATION
+  The kernel booted (animation means init and zygote started), so suspect the
+  parameters or the modules, not a panic:
+    adb shell uname -r
+    adb shell cat /proc/cmdline
+    adb shell dmesg | grep -iE 'version magic|disagrees about version|unknown symbol'
+  A 'version magic' or 'disagrees about version of symbol' line means the ROM's
+  vendor_dlkm modules were built against a different kernel release (this build
+  has CONFIG_LOCALVERSION_AUTO=y, so the release string carries a git
+  description). Recover with: fastboot flash boot <your-stock-boot.img>
 
 ROLLBACK
   fastboot flash boot     <your-stock-boot.img>
