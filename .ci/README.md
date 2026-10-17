@@ -209,23 +209,17 @@ clo_revision: lineage-24.0
 
 ### 产物清单
 
-产物在 `out/release/`，上传成名为
-`op15-oss-kernel-canoe_perf-<run_number>` 的 artifact：
+产物分成**四个 artifact**，按用途分开（不再是单个 876 MB 的包）：
 
-```
-kernel/Image                 ROM 真正打进 boot.img 的内核镜像
-kernel/dtb.img, kernel/*.dtb BOARD_INCLUDE_DTB_IN_BOOTIMG 用的 DT
-flash/boot.img               可直接 fastboot flash boot
-flash/vendor_boot.img        vendor ramdisk + DTB
-flash/dtbo.img               dtbo 分区
-flash/vendor_dlkm.img        模块分区
-flash/init_boot.img          派生出来的，可选，正常**不需要**刷（见下）
-op15-infiniti-anykernel3-*.zip  AnyKernel3 刷机包：只换 boot.img 里的内核
-modules/*.ko + *.modules.load
-config/kernel.config         从 Image 里读回来的真实配置
-FILES_IN_DIST.txt            dist 全部内容清单
-README-FLASH.txt             刷机/回滚/验证说明
-```
+| artifact | 内容 | 什么时候用 |
+|---|---|---|
+| **`op15-anykernel3-*`** | `op15-infiniti-anykernel3-<target>-<date>.zip`（约 21 MB） | **推荐**：只替换现有 `boot.img` 里的内核 |
+| **`op15-images-*`** | `boot.img`、`vendor_boot.img`、`dtbo.img`、`vendor_dlkm.img`、`system_dlkm*.img`、`Image`、12 个 `.dtb`、24 个 `.dtbo`、`README-FLASH.txt` | `fastboot flash` 用 |
+| `op15-modules-*` | 640 个 `.ko` + 两份 `*.modules.load` | 只有模块 ABI 变了才需要；本次改动不用 |
+| `op15-config-*` | `kernel.config`（从 `Image` 读回来的）、`.config`（SoC 合并配置）、`manifest.xml`、`FILES_IN_DIST.txt` | 验证 / 存档 |
+
+`images/README-FLASH.txt` 里是备份、刷机、回滚、验证的完整步骤。
+
 
 ### 关于 `init_boot.img`（重要）
 

@@ -211,13 +211,46 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload artifacts
+      # Four artifacts instead of one 800 MB bundle: the flashable zip, the raw
+      # images, the modules and the config evidence are used by different people
+      # at different times. All four run even when the config check failed, so a
+      # red run still leaves something to inspect.
+      - name: Upload AnyKernel3 zip
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: op15-oss-kernel-canoe_${{ env.SOC_VARIANT }}-${{ github.run_number }}
-          path: out/release/
+          name: op15-anykernel3-canoe_${{ env.SOC_VARIANT }}-${{ github.run_number }}
+          path: out/release/anykernel3/
+          compression-level: 0
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload raw images
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: op15-images-canoe_${{ env.SOC_VARIANT }}-${{ github.run_number }}
+          path: out/release/images/
           # Images are already compressed; recompressing wastes minutes.
           compression-level: 0
-          if-no-files-found: error
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload kernel modules
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: op15-modules-canoe_${{ env.SOC_VARIANT }}-${{ github.run_number }}
+          path: out/release/modules/
+          compression-level: 0
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload build config and proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: op15-config-canoe_${{ env.SOC_VARIANT }}-${{ github.run_number }}
+          path: out/release/config/
+          if-no-files-found: warn
           retention-days: 14

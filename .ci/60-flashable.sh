@@ -45,10 +45,12 @@ AK3_REF="${AK3_REF:-020dfeccf9d7e962a48400fc94d3e451df92eead}"
 
 AK3_DIR="$OUT/anykernel3"
 STAMP="$(date -u +%Y%m%d)"
-AK3_ZIP="$RELEASE/op15-infiniti-anykernel3-${TARGET}-${STAMP}.zip"
+# One directory per artifact, matching the split in 50-package.sh, so each is
+# uploaded separately instead of as one 800 MB bundle.
+AK3_ZIP="$RELEASE/anykernel3/op15-infiniti-anykernel3-${TARGET}-${STAMP}.zip"
 
 rm -rf "$AK3_DIR"
-mkdir -p "$RELEASE"
+mkdir -p "$RELEASE/anykernel3" "$RELEASE/images"
 
 # --------------------------------------------------------------------------
 # 1. AnyKernel3 zip
@@ -133,7 +135,7 @@ unzip -p "$AK3_ZIP" anykernel.sh | grep -E '^(kernel.string|do.devicecheck|devic
 # 2. init_boot.img (derived, optional)
 # --------------------------------------------------------------------------
 MKBOOTIMG_DIR="$KERNEL_PATH/tools/mkbootimg"
-INIT_BOOT="$RELEASE/init_boot.img"
+INIT_BOOT="$RELEASE/images/init_boot.img"
 
 derive_init_boot() {
     local unpack="$MKBOOTIMG_DIR/unpack_bootimg.py"
@@ -210,11 +212,12 @@ derive_init_boot() {
 }
 
 if derive_init_boot; then
-    echo "$INIT_BOOT" > "$RELEASE/.has_init_boot"
+    echo "$INIT_BOOT" > "$RELEASE/anykernel3/.has_init_boot"
 else
     rm -f "$INIT_BOOT"
     warn "shipping without init_boot.img"
 fi
 
 log "Flashable artifacts"
+du -sh "$RELEASE"/* 2>/dev/null || true
 ls -la "$RELEASE"
