@@ -123,8 +123,11 @@ EOF
 
 log "Writing $NAME.zip"
 # The images are already compressed, so level 1 is plenty and much faster.
+# The archive is written straight into $RELEASE by the subshell, so there is
+# nothing to move afterwards; an mv to the same path fails with "are the same
+# file" and used to turn this step red even though the zip was fine.
 ( cd "$RELEASE" && zip -qr1 "$NAME.zip" "$NAME" )
-mv "$RELEASE/$NAME.zip" "$RELEASE/"
+ls -la "$RELEASE/$NAME.zip"
 
 log "Release contents"
 find "$RELEASE/$NAME" -type f -printf '%10s  %P\n' | sort -k2

@@ -140,43 +140,70 @@ derive_init_boot() {
     local mkboot="$MKBOOTIMG_DIR/mkbootimg.py"
     [ -f "$unpack" ] && [ -f "$mkboot" ] || { warn "mkbootimg tools not in the platform; skipping"; return 1; }
 
-    # Only trust an explicitly GKI-named boot image. Deriving from some other
-    # boot.img would risk packaging the wrong ramdisk into a partition the user
-    # might flash.
+    # Where the generic ramdisk lives in this dist. The SoC build has no
+    # build_init_boot (kleaf's kernel_images has no such attribute), but it does
+    # dist the GKI boot artifacts: avb_sign_boot_image() signs
+    # //common:kernel_aarch64_gki_artifacts and "distributes the GKI artifacts",
+    # which is where boot.img / boot-gz.img / boot-lz4.img / boot-img.tar.gz
+    # come from. Those carry the GKI kernel plus the generic ramdisk, so the
+    # ramdisk can be lifted out of them.
+    #
+    # Preference order matters: an explicitly GKI-named file first, then the
+    # compressed GKI variants, then plain boot.img. Whatever is picked, it must
+    # actually contain a ramdisk or it is skipped, so a wrong guess cannot
+    # produce a bogus init_boot.img.
     local candidates=()
-    while IFS= read -r f; do candidates+=("$f"); done < <(
-        find "$DIST" -maxdepth 2 -type f -name '*.img' \
-            \( -iname '*gki*boot*' -o -iname '*gki*' \) 2>/dev/null | sort
-    )
+    local pattern
+    for pattern in '*gki*boot*.img' 'boot-gz.img' 'boot-lz4.img' 'boot.img'; do
+        local hit
+        while IFS= read -r hit; do
+            [ -n "$hit" ] && candidates+=("$hit")
+        done < <(find "$DIST" -maxdepth 1 -type f -name "$pattern" 2>/dev/null | sort)
+    done
     if [ "${#candidates[@]}" -eq 0 ]; then
-        warn "no GKI boot image in the dist, so init_boot.img cannot be derived"
-        warn "that is expected to be harmless: init_boot.img holds only the generic"
-        warn "ramdisk, which this kernel rebuild does not change. Keep the ROM's one."
+        warn "no boot image in the dist to lift a generic ramdisk out of"
+        warn "init_boot.img holds only that ramdisk and a kernel rebuild does not"
+        warn "change it, so keep the one already on the device."
         return 1
     fi
 
     local work="$OUT/init_boot_work" src
     for src in "${candidates[@]}"; do
         rm -rf "$work"; mkdir -p "$work"
-        if ! python3 "$unpack" --boot_img "$src" --out "$work" > "$work/unpack.log" 2>&1; then
-            warn "could not unpack $src (see $work/unpack.log)"
+        local subject="$src"
+
+        # boot-gz.img / boot-lz4.img are the whole boot image compressed, so
+        # unpack_bootimg needs them inflated first.
+        if [ "$(head -c 2 "$src" | od -An -tx1 | tr -d ' \n')" = "1f8b" ]; then
+            if ! gzip -dc "$src" > "$work/inflated.img" 2> "$work/inflate.log"; then
+                warn "could not gunzip $(basename "$src")"
+                continue
+            fi
+            subject="$work/inflated.img"
+            echo "  gunzipped $(basename "$src") -> $(stat -c%s "$subject") bytes"
+        fi
+
+        if ! python3 "$unpack" --boot_img "$subject" --out "$work" > "$work/unpack.log" 2>&1; then
+            warn "could not unpack $(basename "$src") (see $work/unpack.log)"
             continue
         fi
         if [ ! -s "$work/ramdisk" ]; then
-            warn "$(basename "$src") has no ramdisk; not a GKI boot image"
+            warn "$(basename "$src") has no ramdisk; skipping it"
             continue
         fi
 
         log "Deriving init_boot.img from $(basename "$src")"
-        echo "  source ramdisk: $(stat -c%s "$work/ramdisk") bytes"
+        echo "  generic ramdisk: $(stat -c%s "$work/ramdisk") bytes"
         python3 "$mkboot" \
             --header_version 4 \
             --pagesize 4096 \
             --ramdisk "$work/ramdisk" \
             --output "$INIT_BOOT"
         echo "  init_boot.img  : $(stat -c%s "$INIT_BOOT") bytes"
-        warn "init_boot.img is DERIVED and normally unnecessary. Compare its size with"
-        warn "yours (adb shell 'ls -l /dev/block/by-name/init_boot') before flashing it."
+        warn "init_boot.img is DERIVED and normally unnecessary: it holds only the"
+        warn "generic ramdisk, which a kernel rebuild does not change. Compare its"
+        warn "size against yours before flashing it:"
+        warn "  adb shell 'ls -l /dev/block/by-name/init_boot'"
         return 0
     done
     return 1
