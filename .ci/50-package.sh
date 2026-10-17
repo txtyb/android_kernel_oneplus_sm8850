@@ -138,6 +138,30 @@ NOTES
     unlocked, which is why that is expected to boot.
 EOF
 
+# Report how the base DTB travels. BOARD_INCLUDE_DTB_IN_BOOTIMG is true on this
+# device, so the base DTBs should be inside boot.img -- and the dist has no
+# dtb.img to point at, which leaves the boot image as the only place they can be.
+# unpack_bootimg is the platform's own tool; it writes one file per header field,
+# so the presence of 'dtb' answers the question without flashing anything.
+if [ -f "$DIST/boot.img" ] && [ -f "$KERNEL_PATH/tools/mkbootimg/unpack_bootimg.py" ]; then
+    probe="$OUT/boot_probe"
+    rm -rf "$probe"; mkdir -p "$probe"
+    log "Probing boot.img: does it carry the base DTB?"
+    if python3 "$KERNEL_PATH/tools/mkbootimg/unpack_bootimg.py" \
+            --boot_img "$DIST/boot.img" --out "$probe" > "$probe/unpack.log" 2>&1; then
+        for f in kernel dtb ramdisk second; do
+            if [ -s "$probe/$f" ]; then
+                echo "  $f: $(stat -c%s "$probe/$f") bytes"
+            else
+                echo "  $f: absent"
+            fi
+        done
+        grep -iE '^ *(boot image header version|page size|os version)' "$probe/unpack.log" 2>/dev/null | sed 's/^/  /' || true
+    else
+        warn "could not unpack boot.img (see $probe/unpack.log)"
+    fi
+fi
+
 log "Release layout"
 du -sh "$RELEASE"/* 2>/dev/null || true
 # sed, not head: with pipefail a SIGPIPE on find would fail the step.
