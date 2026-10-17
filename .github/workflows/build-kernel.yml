@@ -60,6 +60,12 @@ on:
         description: Extra flags appended verbatim to the bazel command line
         default: ""
         required: false
+      bazel_disk_cache:
+        description: >-
+          Restore/save a bazel --disk_cache slice (10 GB budget). Only pays off
+          when re-running the same commit; costs minutes when the cache is cold.
+        type: boolean
+        default: false
   # Token-free trigger: touching .ci/trigger starts a run. Nothing else does.
   push:
     branches: [lineage-24.0]
@@ -82,6 +88,9 @@ env:
   GKI_REVISION: ${{ inputs.gki_revision || 'auto' }}
   SOC_VARIANT: ${{ inputs.soc_variant || 'perf' }}
   EXTRA_BAZEL_FLAGS: ${{ inputs.extra_bazel_flags || '' }}
+  # Empty unless bazel_disk_cache is enabled; 30-build.sh only adds --disk_cache
+  # when this is non-empty.
+  BAZEL_DISK_CACHE: ${{ inputs.bazel_disk_cache && 'out/bazel-cache' || '' }}
 
 jobs:
   build:
@@ -139,6 +148,25 @@ jobs:
       # into the SoC tree's kleaf defconfig dict here.
       - name: Apply kernel config
         run: bash .ci/20-config.sh
+
+      # Opt-in bazel disk cache.
+      #
+      # Measured on real runs: the repo workspace is ~36 GB and a full build
+      # adds ~23 GB of output and action cache, while GitHub gives a repository
+      # 10 GB of cache in total. So only a slice of the action cache can be
+      # kept, and restoring or saving it costs minutes on a cold run. It earns
+      # its keep when re-running the same commit (packaging/flashable
+      # iteration) and barely at all while the kernel config is still moving,
+      # hence the default of off. A cache failure must never fail the build.
+      - name: Restore bazel disk cache
+        if: ${{ inputs.bazel_disk_cache }}
+        continue-on-error: true
+        uses: actions/cache@v4
+        with:
+          path: out/bazel-cache
+          key: bazel-disk-cache-${{ inputs.clo_revision || 'lineage-24.0' }}-${{ hashFiles('.ci/extra.config') }}
+          restore-keys: |
+            bazel-disk-cache-
 
       - name: Build kernel
         run: bash .ci/30-build.sh

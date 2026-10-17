@@ -87,6 +87,11 @@ export EXTRA_BAZEL_FLAGS="${EXTRA_BAZEL_FLAGS:-}"
 # .ci/30-build.sh names.
 export SOC_DEVICE_BAZELRC="${SOC_DEVICE_BAZELRC:-0}"
 
+# Optional bazel --disk_cache directory. Empty means no cache. .ci/30-build.sh
+# documents what it does and does not buy; the workflow only sets it when the
+# bazel_disk_cache input is enabled.
+export BAZEL_DISK_CACHE="${BAZEL_DISK_CACHE:-}"
+
 # --------------------------------------------------------------------------
 # Where things live
 # --------------------------------------------------------------------------

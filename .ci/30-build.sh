@@ -62,6 +62,28 @@ else
 fi
 printf '  ddk flags   = %s\n' "${SOC_FLAGS[*]}"
 
+# Optional bazel disk cache.
+#
+# Honest accounting, because it is easy to assume a cache always helps:
+#   * the workspace is ~36 GB and a full build's output + action cache is
+#     another ~23 GB (measured on runs 38757248756 and 39028772560), while the
+#     GitHub Actions cache budget is 10 GB per repository -- so neither can be
+#     cached whole;
+#   * a hermetic bazel build does not use ccache, so that route is closed;
+#   * --disk_cache can still hold the hottest objects inside a capped budget,
+#     but saving/restoring it costs minutes on a cold run.
+# It pays off when re-running the same commit (packaging/flashable iteration)
+# and hardly at all while the kernel config is still changing, which is why the
+# workflow tars it behind the bazel_disk_cache input and passes it in only then.
+CACHE_FLAGS=()
+if [ -n "${BAZEL_DISK_CACHE:-}" ]; then
+    mkdir -p "$BAZEL_DISK_CACHE"
+    CACHE_FLAGS+=("--disk_cache=$BAZEL_DISK_CACHE")
+    log "bazel disk cache: $BAZEL_DISK_CACHE ($(du -sh "$BAZEL_DISK_CACHE" 2>/dev/null | cut -f1 || echo empty) restored)"
+else
+    log "bazel disk cache: off"
+fi
+
 set -x
 ./tools/bazel \
     --output_user_root="$BAZEL_OUT" \
@@ -72,6 +94,7 @@ set -x
     --repo_manifest "$KERNEL_PLATFORM:$OUT/manifest.xml" \
     --config=stamp \
     "${SOC_FLAGS[@]}" \
+    "${CACHE_FLAGS[@]}" \
     "--//$KERNEL_SRC_REL:dtbo_config=$DTBO_CONFIG" \
     $EXTRA_BAZEL_FLAGS \
     "//$KERNEL_SRC_REL:${TARGET}_dist" \
