@@ -44,8 +44,12 @@ on:
         default: kernel-6.12.xml
         required: false
       gki_revision:
-        description: 'GKI/ACK revision: "auto" keeps whatever the snippet pins'
-        default: auto
+        description: >-
+          GKI/ACK revision. "auto" keeps whatever the LineageOS snippet pins.
+          Pinned to the commit the target ROM's kernel was built from, because
+          the GKI commit determines the exported-symbol CRCs and CONFIG_MODVERSIONS
+          refuses vendor modules built against a different set.
+        default: "41a2024a9e2e"
         required: false
       soc_variant:
         description: SoC variant (perf is what the ROM ships)
@@ -92,7 +96,7 @@ env:
   CLO_REVISION: ${{ inputs.clo_revision || 'lineage-24.0' }}
   CLO_REMOTE_FETCH: ${{ inputs.clo_remote_fetch || 'https://github.com' }}
   KERNEL_SNIPPET: ${{ inputs.kernel_snippet || 'kernel-6.12.xml' }}
-  GKI_REVISION: ${{ inputs.gki_revision || 'auto' }}
+  GKI_REVISION: ${{ inputs.gki_revision || '41a2024a9e2e' }}
   SOC_VARIANT: ${{ inputs.soc_variant || 'perf' }}
   EXTRA_BAZEL_FLAGS: ${{ inputs.extra_bazel_flags || '' }}
   # Empty unless bazel_disk_cache is enabled; 30-build.sh only adds --disk_cache
