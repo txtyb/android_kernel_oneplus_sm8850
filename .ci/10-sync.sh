@@ -39,16 +39,18 @@ log "Writing .repo/local_manifests/op15-oss-kernel.xml"
 log "  CLO/SoC kernel: $CLO_REPO @ $CLO_REVISION ($CLO_REMOTE_FETCH)"
 mkdir -p .repo/local_manifests
 
-# Optional GKI/ACK pin override. Default "auto" keeps the revision the
-# LineageOS snippet pins; anything else re-points kernel/common at a specific
-# tag (e.g. android16-6.12-2026-09).
+# A GKI/ACK pin cannot go through the manifest. repo resolves a project
+# revision to refs/heads/<rev> and then fails with
+#
+#   fatal: couldn't find remote ref refs/heads/41a2024a9e2e
+#
+# for a bare commit SHA (proved by run 39115224034). It is also unnecessary: the
+# commit we care about is an ancestor of whatever the snippet pins, and the sync
+# keeps full history, so it is already in the local object database. The pin is
+# applied with git after the sync instead. GKI_OVERRIDE stays empty deliberately.
 GKI_OVERRIDE=""
 if [ -n "$GKI_REVISION" ] && [ "$GKI_REVISION" != "auto" ]; then
-    warn "overriding the GKI/ACK revision with $GKI_REVISION"
-    GKI_OVERRIDE="  <remove-project name=\"kernel/common\" />
-  <project path=\"$PLATFORM_REL/common\" name=\"kernel/common\" remote=\"aosp\"
-           revision=\"$GKI_REVISION\" upstream=\"$GKI_REVISION\" />
-"
+    log "GKI/ACK revision override requested: $GKI_REVISION (applied after the sync)"
 fi
 
 cat > .repo/local_manifests/op15-oss-kernel.xml <<EOF
@@ -116,6 +118,20 @@ for f in MODULE.bazel WORKSPACE.bzlmod tools/bazel; do
         warn "$KERNEL_PATH/$f is missing (repo linkfile not created?)"
     fi
 done
+
+if [ -n "$GKI_REVISION" ] && [ "$GKI_REVISION" != "auto" ]; then
+    log "Checking out the requested GKI/ACK revision"
+    if ! git -C "$KERNEL_PATH/common" cat-file -e "${GKI_REVISION}^{commit}" 2>/dev/null; then
+        warn "$GKI_REVISION is not present locally; fetching it explicitly"
+        git -C "$KERNEL_PATH/common" fetch --no-tags origin "$GKI_REVISION" \
+            || die "cannot fetch GKI revision $GKI_REVISION"
+    fi
+    git -C "$KERNEL_PATH/common" checkout --detach --quiet "$GKI_REVISION" \
+        || die "cannot check out GKI revision $GKI_REVISION"
+    printf '  kernel/common checked out at %s (%s)\n' \
+        "$(git -C "$KERNEL_PATH/common" rev-parse --short HEAD)" \
+        "$(git -C "$KERNEL_PATH/common" log -1 --format=%cs)"
+fi
 
 log "Pinned revisions"
 printf '  %-46s %s\n' "kernel/common (GKI/ACK)" "$(git -C "$KERNEL_PATH/common" rev-parse --short HEAD 2>/dev/null || echo '?')"
